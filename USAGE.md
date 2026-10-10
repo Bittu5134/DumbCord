@@ -1,6 +1,6 @@
-# ChatCord — Detailed Usage
+# DumbCord — Detailed Usage
 
-Everything the short [README](README.md) leaves out. ChatCord learns from your server's own
+Everything the short [README](README.md) leaves out. DumbCord learns from your server's own
 chat history and becomes its unfiltered mirror — no LLM, no API key, no filter layer. It
 turns one Discord channel into a training corpus and a reply bot:
 

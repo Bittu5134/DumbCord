@@ -1,4 +1,4 @@
-# ChatCord settings -- this is the whole required config.
+# DumbCord settings -- this is the whole required config.
 # The bot token is NOT here: it lives in .env as DISCORD_TOKEN (see .env.example).
 
 [discord]

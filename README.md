@@ -1,11 +1,8 @@
 <div align="center">
 
-# ChatCord
+# DumbCord
 
-**A Discord bot that learns from your chats — and becomes your server.**
-
-Show it your server's chat history and it starts talking like all of you — sending the
-same GIFs and links your members actually use, and saying the things you all say.
+**A Discord bot that learns from your server chats — and becomes you!**
 
 No LLM. No API key. No filter. Everything stays on your machine, so the bot is as
 unfiltered as your server is. A true mirror.
@@ -18,34 +15,43 @@ unfiltered as your server is. A true mirror.
 
 ## How It Works
 
-- **`scraper.py`** downloads a channel's full message history into a small JSONL dataset.
-  Links people paste get tokenised into `<url:HASH>` placeholders, with a side map that
-  resolves them back to real URLs later.
-- **`bot.py`** trains on that dataset and answers two ways:
-  - **Retrieval** — it remembers "someone said X and someone replied with this paste", so
-    when your message looks like X, it sends that exact GIF/image/link back.
-  - **Markov** — if nothing matches, it generates a fresh message from a word-level chain
-    built from your server's history.
-
-Point the learning channel and the reply channel at the same place, or keep them separate.
+- A scraper script first downloads the server history to train the bot
+- The actual bot is then run, which loads this message history and uses retrieval and Markov methods to reply to users with text and GIFs.
 
 ## Quickstart
 
+This is the shortest path to get the bot running locally.
+
+1. Clone the project and enter the folder.
+2. Create a virtual environment and install the Python dependencies.
+3. Copy the environment example file and add your Discord bot token.
+4. Run the scraper to download and build the training corpus from your server history.
+5. Start the bot so it can answer in the configured Discord channel, DM, or when mentioned.
+
 ```bash
-git clone <this repo> && cd ChatCord
+git clone https://github.com/Bittu5134/DumbCord.git && cd DumbCord
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env          # then paste your bot token into .env
-python scraper.py             # build the corpus  (Enter = as much as possible)
-python bot.py                 # start replying
+cp .env.example .env          # paste your bot token into .env
+python scraper.py             # downloads chat history and builds the knowledge base
+python bot.py                 # starts the bot and begins replying
 ```
 
-That's the whole setup — `config.toml` already has the server/channel ids filled in.
-Needs **Python 3.11+** and a bot with **Message Content Intent** enabled
-([portal setup](USAGE.md#discord-developer-portal-setup)). Re-run the scraper anytime to
-refresh what the bot knows; [`!dumb_reload`](USAGE.md#reloading) retrains without a restart.
+`config.toml` is already set up with the default server/channel IDs, so you can get started quickly without extra edits. If you want to change which server or channel it listens to, see the configuration guide.
+
+This project requires **Python 3.11+** and a Discord bot with **Message Content Intent** enabled in the developer portal ([portal setup](USAGE.md#discord-developer-portal-setup)).
+
+After the initial scrape, run `python scraper.py` again anytime you want to refresh what the bot has learned. You can also use [`!dumb_reload`](USAGE.md#reloading) to retrain the bot without restarting it.
 
 <sub>[Full configuration](USAGE.md#configuration) · [Troubleshooting](USAGE.md#troubleshooting)</sub>
+
+### Basic Usage
+
+Once the bot is online, you can:
+
+- Mention it with `@DumbCord your message`
+- Send it a direct message
+- Talk in the configured channel
 
 <br>
 

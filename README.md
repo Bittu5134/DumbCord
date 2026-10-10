@@ -7,8 +7,29 @@
 
 ---
 
+## Quickstart
+
+```bash
+git clone <this repo> && cd ChatCord
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env          # then paste your bot token into .env
+python scraper.py             # build the corpus  (Enter = as much as possible)
+python bot.py                 # start replying
+```
+
+That is the whole setup. `config.toml` already has the `[discord]` ids filled in — change
+`guild` / `channel` / `scrape_channel` if you are pointing this at your own server.
+
+Needs **Python 3.11+** and a bot with **Message Content Intent** enabled
+([portal setup](#discord-developer-portal-setup)). The corpus is gitignored, so
+`scraper.py` is what makes `bot.py` useful — run it first.
+
+---
+
 ## Contents
 
+- [Quickstart](#quickstart)
 - [What it does](#what-it-does)
 - [How it works](#how-it-works)
 - [Requirements](#requirements)
@@ -100,22 +121,21 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Two config files, two jobs:
+Two config files, two jobs. `.env` holds the one secret:
 
-**`.env`** — the one secret, nothing else (gitignored):
-
-```ini
-DISCORD_TOKEN=...
+```bash
+cp .env.example .env      # then put DISCORD_TOKEN=... in it
 ```
 
-**`config.toml`** — everything else (tracked, safe to commit):
+`config.toml` holds everything else and is tracked. Only `[discord]` matters — the rest of
+the file is optional keys, commented out, sitting on their defaults:
 
 ```toml
 [discord]
 guild          = 123    # server id
 channel        = 456    # where the bot replies
 scrape_channel = 789    # where it learns from (falls back to channel)
-owner          = 0      # user id allowed to run !dumb_reload (0 = DM only)
+# owner        = 0      # user id allowed to run !dumb_reload (0 = DM only)
 ```
 
 ## Discord developer portal setup
@@ -262,6 +282,7 @@ config.py       shared config loading (.env + config.toml) and JSONL reading
 scraper.py      backfill + live-watch a channel into the dataset
 bot.py          the reply bot (retrieval + Markov)
 config.toml     all settings except the token
+.env.example    template for .env (which holds DISCORD_TOKEN)
 requirements.txt
 ```
 
@@ -269,7 +290,7 @@ requirements.txt
 
 | symptom | fix |
 |---|---|
-| `[error] DISCORD_TOKEN missing` | put `DISCORD_TOKEN=...` in `.env` |
+| `[error] DISCORD_TOKEN missing` | `cp .env.example .env` and put your token in it |
 | replies are empty / the bot ignores text | Message Content Intent is off (see setup step 3) |
 | `[error] guild ... not found` | the bot isn't in the server, or the id is wrong |
 | `[error] missing 'Read Message History' permission` | grant *Read Message History* in the channel |

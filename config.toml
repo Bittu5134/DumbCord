@@ -1,27 +1,32 @@
-# ChatCord settings.  The bot token is NOT here -- it lives in .env as DISCORD_TOKEN.
+# ChatCord settings -- this is the whole required config.
+# The bot token is NOT here: it lives in .env as DISCORD_TOKEN (see .env.example).
 
 [discord]
 guild          = 877508637814300683   # server id
 channel        = 1420108109073875054  # channel the bot replies in
 scrape_channel = 877526498058309654   # channel the scraper learns from
-owner          = 0                    # user id allowed to run !dumb_reload (0 = DM only)
+# owner        = 0                    # user id allowed to run !dumb_reload (0 = DM only)
 
-[scraper]
-data_file  = "messages.jsonl"         # training corpus
-state_file = "chat_state.json"        # resume state
-media_file = "media.jsonl"            # <url:HASH> -> url map
-url_tokens = true                     # tokenise pasted URLs
-skip_bots  = true                     # skip every bot author, not just itself
-skip_empty = true                     # skip messages with no text
-edit_scan  = 200                      # recent messages rechecked for edits
-
-[bot]
-chat_log           = "chats.jsonl"    # guild reply log
-dm_log             = "dms.jsonl"      # DM reply log
-outgoing_mentions  = "block"          # block | silent | allow_users | allow_all
-retrieval          = true             # try url retrieval before markov
-retrieval_threshold = 0.6             # 0..1 query coverage needed to send a link
-retrieval_topn     = 5                # pick at random among the N best matches
-retrieval_kinds    = ["gif", "image", "link"]
-corpus_dedupe      = true             # train on unique lines only
-markov_test_output = true             # markovify verbatim-copy filter
+# ---------------------------------------------------------------------------
+# Everything below is optional and currently commented out, i.e. running on its
+# default. Uncomment a line to override it. See README.md for the full tables.
+#
+# [scraper]
+# data_file  = "messages.jsonl"    # training corpus
+# state_file = "chat_state.json"   # resume state
+# media_file = "media.jsonl"       # <url:HASH> -> url map
+# url_tokens = true                # tokenise pasted URLs
+# skip_bots  = true                # skip every bot author, not just itself
+# skip_empty = true                # skip messages with no text
+# edit_scan  = 200                 # recent messages rechecked for edits
+#
+# [bot]
+# chat_log            = "chats.jsonl"   # guild reply log
+# dm_log              = "dms.jsonl"     # DM reply log
+# outgoing_mentions   = "block"         # block | silent | allow_users | allow_all
+# retrieval           = true            # try url retrieval before markov
+# retrieval_threshold = 0.6             # 0..1 query coverage needed to send a link
+# retrieval_topn      = 5               # pick at random among the N best matches
+# retrieval_kinds     = ["gif", "image", "link"]
+# corpus_dedupe       = true            # train on unique lines only
+# markov_test_output  = true            # markovify verbatim-copy filter

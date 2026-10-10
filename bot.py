@@ -27,6 +27,7 @@ Config (.env / environment):
     CHAT_LOG / DM_LOG   reply logs                 (default chats.jsonl / dms.jsonl)
 
     OUTGOING_MENTIONS   block | silent | allow_users | allow_all   (default block)
+                        note: @everyone/@here are ALWAYS stripped from replies
     RETRIEVAL           true|false  try url retrieval first        (default true)
     RETRIEVAL_THRESHOLD 0..1 minimum query coverage to send a link (default 0.6)
     MARKOV_TEST_OUTPUT  true|false  markovify's verbatim-copy filter (default true)
@@ -81,11 +82,10 @@ MARKOV_TEST_OUTPUT = env_bool("MARKOV_TEST_OUTPUT", True)
 RETRIEVAL_KINDS = {k.strip().lower() for k in
                    (os.getenv("RETRIEVAL_KINDS") or "gif,image,link").split(",") if k.strip()}
 
-ZWSP = "\u200b"
 TOKEN_RE = re.compile(r"<url:[0-9a-f]+>")
 MENTION_RE = re.compile(r"<@[!&]?\d+>")
 RAW_URL_RE = re.compile(r"https?://\S+")
-EVERYONE_RE = re.compile(r"@(everyone|here)")
+EVERYONE_RE = re.compile(r"@(everyone|here)\b", re.IGNORECASE)
 NONWORD_RE = re.compile(r"[^a-z0-9']+")
 
 STOPWORDS = {
@@ -274,10 +274,15 @@ def resolve_tokens(text):
 
 
 def sanitize_outgoing(text):
-    """Never let generated text ping everyone."""
-    if OUTGOING_MENTIONS == "allow_all" or not text:
+    """@everyone / @here are removed outright - they must never appear.
+
+    This applies in every mode, including allow_all: the reply text can never
+    contain them, so no setting can turn them back on.
+    """
+    if not text:
         return text
-    return EVERYONE_RE.sub(lambda m: f"@{ZWSP}{m.group(1)}", text)
+    text = EVERYONE_RE.sub("", text)
+    return re.sub(r"\s{2,}", " ", text).strip()
 
 
 def allowed_mentions():

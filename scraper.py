@@ -31,8 +31,10 @@ Config (.env / environment):
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
+import re
 import signal
 import sys
 from datetime import datetime, timezone
@@ -73,6 +75,18 @@ SKIP_BOTS = env_bool("SKIP_BOTS", True)
 SKIP_EMPTY = env_bool("SKIP_EMPTY", True)
 EDIT_SCAN = int(os.getenv("EDIT_SCAN") or 200)
 
+# --- URL tokenisation ---
+MEDIA_FILE = os.getenv("MEDIA_FILE", "media.jsonl")
+URL_TOKENS = env_bool("URL_TOKENS", True)
+
+# --- mention handling in the training corpus ---
+# user mentions: keep (default) | name | strip | token
+MENTION_MODE = os.getenv("MENTION_MODE", "keep").strip().lower()
+# role mentions: name (default) | strip | token | keep
+ROLE_MENTION_MODE = os.getenv("ROLE_MENTION_MODE", "name").strip().lower()
+# @everyone / @here are always neutralised (zero-width separator, no ping)
+SANITIZE_EVERYONE = env_bool("SANITIZE_EVERYONE", True)
+
 
 def now_iso():
     return datetime.now(timezone.utc).isoformat()
@@ -80,13 +94,147 @@ def now_iso():
 
 # ------------------------------------------------------------ lean records ---
 
-def lean_record(message: discord.Message) -> dict:
+URL_RE = re.compile(r"https?://[^\s<>\"'`]+")
+ROLE_RE = re.compile(r"<@&(\d+)>")
+USER_RE = re.compile(r"<@!?(\d+)>")
+EVERYONE_RE = re.compile(r"@(everyone|here)")
+MEDIA_RE = re.compile(r"<url:([0-9a-f]+)>")
+ZWSP = "\u200b"
+
+
+def _kind(url):
+    low = url.lower()
+    if any(h in low for h in ("klipy.com", "tenor.com", "giphy.com")):
+        return "gif"
+    if any(e in low for e in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".mp4", ".webm")):
+        return "image"
+    return "link"
+
+
+def _slug(url):
+    seg = url.split("?")[0].rstrip("/").split("/")[-1]
+    words = [w for w in re.split(r"[-_.]+", seg) if len(w) > 2 and not w.isdigit()]
+    return "-".join(words[:6])
+
+
+_TRAILING_PUNCT = ".,;:!?\"'"
+_CLOSERS = (("(", ")"), ("[", "]"), ("{", "}"))
+
+
+def clean_url(url):
+    """Strip punctuation that chat text glues onto a link, e.g. markdown (url)"""
+    url = url.rstrip(_TRAILING_PUNCT)
+    for opener, closer in _CLOSERS:
+        while url.endswith(closer) and url.count(opener) < url.count(closer):
+            url = url[:-1]
+    return url
+
+
+class MediaStore:
+    """Every URL gets a stable, whitespace-free <url:HASH> token."""
+
+    def __init__(self, path=MEDIA_FILE):
+        self.path = path
+        self.by_url = {}
+        self.by_token = {}
+        self.pending = []
+        self._load()
+
+    def _load(self):
+        if not os.path.exists(self.path):
+            return
+        with open(self.path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                tok, url = rec.get("token"), rec.get("url")
+                if tok and url:
+                    self.by_token[tok] = url
+                    self.by_url[url] = tok
+        print(f"[media] {len(self.by_token)} url token(s) known")
+
+    def token(self, url):
+        tok = self.by_url.get(url)
+        if tok:
+            return tok
+        digest = hashlib.sha1(url.encode("utf-8")).hexdigest()[:10]
+        tok = f"<url:{digest}>"
+        while tok in self.by_token and self.by_token[tok] != url:
+            digest = hashlib.sha1((digest + url).encode("utf-8")).hexdigest()[:10]
+            tok = f"<url:{digest}>"
+        self.by_url[url] = tok
+        self.by_token[tok] = url
+        host = re.sub(r"^https?://(?:www\.)?", "", url).split("/")[0]
+        self.pending.append({
+            "token": tok, "url": url, "host": host,
+            "slug": _slug(url), "kind": _kind(url), "added_at": now_iso(),
+        })
+        return tok
+
+    def flush(self):
+        if not self.pending:
+            return
+        with open(self.path, "a", encoding="utf-8") as fh:
+            for rec in self.pending:
+                fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        self.pending.clear()
+
+
+def sanitize_text(content, message, media):
+    """Tokenise URLs, neutralise @everyone/@here and sanitise role mentions.
+
+    User mentions are left untouched by default so the model can learn them.
+    """
+    if not content:
+        return content
+
+    if URL_TOKENS:
+        content = URL_RE.sub(lambda m: media.token(clean_url(m.group(0))), content)
+
+    if ROLE_MENTION_MODE != "keep":
+        roles = {str(r.id): r.name for r in getattr(message, "role_mentions", [])}
+
+        def _role(m):
+            if ROLE_MENTION_MODE == "token":
+                return f"<role:{m.group(1)}>"
+            if ROLE_MENTION_MODE == "strip":
+                return ""
+            name = roles.get(m.group(1))
+            return f"@{name}" if name else "@role"
+
+        content = ROLE_RE.sub(_role, content)
+
+    if MENTION_MODE != "keep":
+        users = {str(u.id): (u.display_name or u.name) for u in getattr(message, "mentions", [])}
+
+        def _user(m):
+            if MENTION_MODE == "token":
+                return f"<user:{m.group(1)}>"
+            if MENTION_MODE == "strip":
+                return ""
+            name = users.get(m.group(1))
+            return f"@{name}" if name else "@user"
+
+        content = USER_RE.sub(_user, content)
+
+    if SANITIZE_EVERYONE:
+        content = EVERYONE_RE.sub(lambda m: f"@{ZWSP}{m.group(1)}", content)
+
+    return content
+
+
+def lean_record(message: discord.Message, media) -> dict:
     """Only the fields the reply bot / trainer actually needs."""
     record = {
         "id": message.id,
         "author_id": message.author.id,
         "author": message.author.display_name or message.author.name,
-        "content": message.content,
+        "content": sanitize_text(message.content, message, media),
         "created_at": message.created_at.isoformat(),
     }
     if message.author.bot:
@@ -100,13 +248,14 @@ def lean_record(message: discord.Message) -> dict:
 
 class Scraper:
     def __init__(self, limit, check_edits=True):
-        self.limit = limit                 # 0 = unlimited, only caps the backfill
+        self.limit = limit                 
         self.check_edits = check_edits
-        self.self_id = None                # filled in on_ready
+        self.self_id = None                
         self.state = self._load_state()
-        self.seen = set()                  # ids already on disk
-        self.edited = {}                   # id -> last known edited_at
+        self.seen = set()                 
+        self.edited = {}                   
         self.data_handle = None
+        self.media = MediaStore()
         self._load_index()
 
     # ---- state -------------------------------------------------------------
@@ -175,12 +324,14 @@ class Scraper:
     def flush(self):
         if self.data_handle:
             self.data_handle.flush()
+        self.media.flush()
         self.save_state()
 
     def close(self):
         if self.data_handle and not self.data_handle.closed:
             self.data_handle.flush()
             self.data_handle.close()
+        self.media.flush()
         self.save_state()
 
     # ---- filtering ---------------------------------------------------------
@@ -200,7 +351,9 @@ class Scraper:
         if not force:
             if message.id in self.seen or not self.wanted(message):
                 return False
-        self.data_handle.write(json.dumps(lean_record(message), ensure_ascii=False) + "\n")
+        self.data_handle.write(
+            json.dumps(lean_record(message, self.media), ensure_ascii=False) + "\n"
+        )
         if not force:
             self.seen.add(message.id)
         if message.edited_at:

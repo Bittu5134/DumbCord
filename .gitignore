@@ -8,11 +8,15 @@
 
 # generated data (scraper output + bot logs)
 messages.jsonl
+media.jsonl
 chats.jsonl
 dms.jsonl
 chat_state.json
 messages.txt
 *.tmp
+extracted_images/
+images/
+downloads/
 
 # python
 __pycache__/

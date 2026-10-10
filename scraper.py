@@ -20,18 +20,14 @@ Behaviour:
       exactly as typed. The only change is pasted URLs becoming <url:HASH> tokens
       (URL_TOKENS), which is what the retrieval index in bot.py matches on.
       No ping neutralisation happens here; bot.py does that at reply time.
-    * Progress lives in chat_state.json, data in messages.jsonl (.env for config).
+    * Progress lives in chat_state.json, data in messages.jsonl.
 
-Config (.env / environment):
-    TOKEN       discord bot token                       (required)
-    GUILD       guild id to scrape                      (required)
-    SCRAPE_CHANNEL  channel id to train from   (falls back to CHANNEL)
-    CHANNEL     fallback target if SCRAPE_CHANNEL is unset
-    DATA_FILE   output jsonl                            (default messages.jsonl)
-    STATE_FILE  scraper state json                      (default chat_state.json)
-    SKIP_BOTS   true|false - skip all bots, not just self (default true)
-    SKIP_EMPTY  true|false - skip messages without text   (default true)
-    EDIT_SCAN   how many recent messages to recheck for edits (default 200)
+Config:
+    .env          DISCORD_TOKEN only - the one secret, never committed
+    config.toml   everything else; keys used here live under [discord] and [scraper]:
+                    guild, scrape_channel (falls back to channel)
+                    data_file, state_file, media_file
+                    url_tokens, skip_bots, skip_empty, edit_scan
 """
 
 import argparse
@@ -42,6 +38,7 @@ import os
 import re
 import signal
 import sys
+import tomllib
 from datetime import datetime, timezone
 
 import discord
@@ -49,7 +46,7 @@ import discord
 # ------------------------------------------------------------------ config ---
 
 def load_dotenv(path=".env"):
-    """Minimal .env loader (no external dependency)."""
+    """Read .env - the bot token is the only thing that lives there."""
     if not os.path.exists(path):
         return
     with open(path, "r", encoding="utf-8") as fh:
@@ -61,34 +58,57 @@ def load_dotenv(path=".env"):
             os.environ.setdefault(key.strip(), val.strip().strip("'\""))
 
 
+CONFIG_FILE = "config.toml"
+
+DEFAULTS = {
+    "guild": 0, "channel": 0, "scrape_channel": 0, "owner": 0,
+    "data_file": "messages.jsonl", "state_file": "chat_state.json",
+    "media_file": "media.jsonl", "url_tokens": True, "skip_bots": True,
+    "skip_empty": True, "edit_scan": 200,
+    "chat_log": "chats.jsonl", "dm_log": "dms.jsonl",
+    "outgoing_mentions": "block", "retrieval": True, "retrieval_threshold": 0.6,
+    "retrieval_topn": 5, "retrieval_kinds": ["gif", "image", "link"],
+    "corpus_dedupe": True, "markov_test_output": True,
+}
+
+
+def load_config(path=CONFIG_FILE):
+    """Read config.toml; sections are flattened. A missing file means defaults."""
+    cfg = dict(DEFAULTS)
+    if not os.path.exists(path):
+        print(f"[config] {path} not found, using built-in defaults")
+        return cfg
+    with open(path, "rb") as fh:
+        raw = tomllib.load(fh)
+    for key, value in raw.items():
+        if isinstance(value, dict):
+            cfg.update(value)
+        else:
+            cfg[key] = value
+    return cfg
+
+
 load_dotenv()
+CFG = load_config()
 
-
-def env_bool(name, default):
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in ("1", "true", "yes", "on")
-
-
-TOKEN = os.getenv("TOKEN")
-GUILD_ID = int(os.getenv("GUILD") or 0)
+# the token is the only secret, so it is the only thing read from the environment
+TOKEN = os.getenv("DISCORD_TOKEN")
+GUILD_ID = int(CFG["guild"] or 0)
 # channel the bot replies in (bot.py) - also the scraper fallback target
-CHANNEL_ID = int(os.getenv("CHANNEL") or 0)
-# channel scraper.py trains from. Keeps the training channel separate from the
-# channel the bot replies in; defaults to CHANNEL when unset.
-SCRAPE_CHANNEL_ID = int(os.getenv("SCRAPE_CHANNEL") or 0) or CHANNEL_ID
-DATA_FILE = os.getenv("DATA_FILE", "messages.jsonl")
-STATE_FILE = os.getenv("STATE_FILE", "chat_state.json")
-SKIP_BOTS = env_bool("SKIP_BOTS", True)
-SKIP_EMPTY = env_bool("SKIP_EMPTY", True)
-EDIT_SCAN = int(os.getenv("EDIT_SCAN") or 200)
+CHANNEL_ID = int(CFG["channel"] or 0)
+# channel scraper.py trains from; defaults to the reply channel when unset
+SCRAPE_CHANNEL_ID = int(CFG["scrape_channel"] or 0) or CHANNEL_ID
+DATA_FILE = str(CFG["data_file"] or "messages.jsonl")
+STATE_FILE = str(CFG["state_file"] or "chat_state.json")
+SKIP_BOTS = bool(CFG["skip_bots"])
+SKIP_EMPTY = bool(CFG["skip_empty"])
+EDIT_SCAN = int(CFG["edit_scan"] or 200)
 
 # --- URL tokenisation ---
 # Stored content is otherwise verbatim: mentions, roles and @everyone/@here are
 # kept exactly as written. All ping neutralisation happens at reply time (bot.py).
-MEDIA_FILE = os.getenv("MEDIA_FILE", "media.jsonl")
-URL_TOKENS = env_bool("URL_TOKENS", True)
+MEDIA_FILE = str(CFG["media_file"] or "media.jsonl")
+URL_TOKENS = bool(CFG["url_tokens"])
 
 
 def now_iso():
@@ -538,10 +558,10 @@ def main():
         SCRAPE_CHANNEL_ID = CHANNEL_ID
 
     if not TOKEN:
-        print("[error] TOKEN missing (.env or environment)")
+        print("[error] DISCORD_TOKEN missing - put it in .env")
         return 1
     if not GUILD_ID or not SCRAPE_CHANNEL_ID:
-        print("[error] GUILD and either SCRAPE_CHANNEL or CHANNEL must be set in .env")
+        print("[error] guild and scrape_channel (or channel) must be set in config.toml")
         return 1
 
     if args.all:

@@ -17,28 +17,25 @@ The corpus is stored verbatim (only pasted URLs are <url:...> tokens), so the bo
 CAN generate real mentions - including @everyone and role mentions. Every ping is
 therefore neutralised at reply time by OUTGOING_MENTIONS + sanitize_outgoing().
 
-Config (.env / environment):
-    TOKEN               discord bot token                       (required)
-    GUILD               guild id the @mention trigger applies to (required)
-    CHANNEL             channel id the bot always replies in     (required)
-    OWNER               your user id, allowed to use !dumb_reload (optional)
-    DATA_FILE           training corpus            (default messages.jsonl)
-    MEDIA_FILE          url token map              (default media.jsonl)
-    CHAT_LOG / DM_LOG   reply logs                 (default chats.jsonl / dms.jsonl)
+Config:
+    .env          DISCORD_TOKEN only - the one secret, never committed
+    config.toml   everything else: guild, channels, retrieval, logs, log files
 
-    OUTGOING_MENTIONS   block | silent | allow_users | allow_all   (default block)
+Key config.toml values under [bot]:
+    outgoing_mentions   block | silent | allow_users | allow_all   (default block)
                         note: @everyone/@here are ALWAYS stripped from replies
-    RETRIEVAL           true|false  try url retrieval first        (default true)
-    RETRIEVAL_THRESHOLD 0..1 minimum query coverage to send a link (default 0.6)
-    RETRIEVAL_TOPN      pick at random among the N best matches     (default 5, 1 = always best)
-    MARKOV_TEST_OUTPUT  true|false  markovify's verbatim-copy filter (default true)
-    CORPUS_DEDUPE       true|false  train on unique lines only     (default true)
+    retrieval           try url retrieval first                    (default true)
+    retrieval_threshold 0..1 query coverage needed to send a link (default 0.6)
+    retrieval_topn      pick at random among the N best matches    (default 5, 1 = best)
+    markov_test_output  markovify's verbatim-copy filter           (default true)
+    corpus_dedupe       train on unique lines only                 (default true)
 """
 
 import json
 import os
 import random
 import re
+import tomllib
 from datetime import datetime, timezone
 
 import discord
@@ -47,6 +44,7 @@ import markovify
 # ------------------------------------------------------------------ config ---
 
 def load_dotenv(path=".env"):
+    """Read .env - the bot token is the only thing that lives there."""
     if not os.path.exists(path):
         return
     with open(path, "r", encoding="utf-8") as fh:
@@ -58,36 +56,62 @@ def load_dotenv(path=".env"):
             os.environ.setdefault(key.strip(), val.strip().strip("'\""))
 
 
-def env_bool(name, default):
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in ("1", "true", "yes", "on")
+CONFIG_FILE = "config.toml"
+
+DEFAULTS = {
+    "guild": 0, "channel": 0, "scrape_channel": 0, "owner": 0,
+    "data_file": "messages.jsonl", "state_file": "chat_state.json",
+    "media_file": "media.jsonl", "url_tokens": True, "skip_bots": True,
+    "skip_empty": True, "edit_scan": 200,
+    "chat_log": "chats.jsonl", "dm_log": "dms.jsonl",
+    "outgoing_mentions": "block", "retrieval": True, "retrieval_threshold": 0.6,
+    "retrieval_topn": 5, "retrieval_kinds": ["gif", "image", "link"],
+    "corpus_dedupe": True, "markov_test_output": True,
+}
+
+
+def load_config(path=CONFIG_FILE):
+    """Read config.toml; sections are flattened. A missing file means defaults."""
+    cfg = dict(DEFAULTS)
+    if not os.path.exists(path):
+        print(f"[config] {path} not found, using built-in defaults")
+        return cfg
+    with open(path, "rb") as fh:
+        raw = tomllib.load(fh)
+    for key, value in raw.items():
+        if isinstance(value, dict):
+            cfg.update(value)
+        else:
+            cfg[key] = value
+    return cfg
 
 
 load_dotenv()
+CFG = load_config()
 
-TOKEN = os.getenv("TOKEN")
-GUILD_ID = int(os.getenv("GUILD") or 0)
-CHANNEL_ID = int(os.getenv("CHANNEL") or 0)
-OWNER_ID = int(os.getenv("OWNER") or 0)
-DATA_FILE = os.getenv("DATA_FILE", "messages.jsonl")
-MEDIA_FILE = os.getenv("MEDIA_FILE", "media.jsonl")
-CHAT_LOG = os.getenv("CHAT_LOG", "chats.jsonl")
-DM_LOG = os.getenv("DM_LOG", "dms.jsonl")
+# the token is the only secret, so it is the only thing read from the environment
+TOKEN = os.getenv("DISCORD_TOKEN")
+GUILD_ID = int(CFG["guild"] or 0)
+CHANNEL_ID = int(CFG["channel"] or 0)
+OWNER_ID = int(CFG["owner"] or 0)
+DATA_FILE = str(CFG["data_file"] or "messages.jsonl")
+MEDIA_FILE = str(CFG["media_file"] or "media.jsonl")
+CHAT_LOG = str(CFG["chat_log"] or "chats.jsonl")
+DM_LOG = str(CFG["dm_log"] or "dms.jsonl")
 
-OUTGOING_MENTIONS = os.getenv("OUTGOING_MENTIONS", "block").strip().lower()
-RETRIEVAL = env_bool("RETRIEVAL", True)
-RETRIEVAL_THRESHOLD = float(os.getenv("RETRIEVAL_THRESHOLD") or 0.6)
-# keep this many of the best-scoring matches and pick one at random, so the same
-# input does not always produce the same paste. 1 = strict best match.
-RETRIEVAL_TOPN = max(1, int(os.getenv("RETRIEVAL_TOPN") or 5))
-MARKOV_TEST_OUTPUT = env_bool("MARKOV_TEST_OUTPUT", True)
-# train on unique lines only: the corpus is 35% duplicates, which skews output
-CORPUS_DEDUPE = env_bool("CORPUS_DEDUPE", True)
+OUTGOING_MENTIONS = str(CFG["outgoing_mentions"] or "block").strip().lower()
+RETRIEVAL = bool(CFG["retrieval"])
+RETRIEVAL_THRESHOLD = float(CFG["retrieval_threshold"] or 0.6)
+# pick at random among the N best matches so the same input varies; 1 = strict best
+RETRIEVAL_TOPN = max(1, int(CFG["retrieval_topn"] or 5))
+MARKOV_TEST_OUTPUT = bool(CFG["markov_test_output"])
+# train on unique lines only: the corpus is heavily duplicated, which skews output
+CORPUS_DEDUPE = bool(CFG["corpus_dedupe"])
 # which media kinds may be sent by the retrieval path (media.jsonl "kind")
-RETRIEVAL_KINDS = {k.strip().lower() for k in
-                   (os.getenv("RETRIEVAL_KINDS") or "gif,image,link").split(",") if k.strip()}
+_kinds = CFG["retrieval_kinds"]
+if isinstance(_kinds, str):
+    _kinds = _kinds.split(",")
+RETRIEVAL_KINDS = {str(k).strip().lower() for k in _kinds if str(k).strip()}
 
 TOKEN_RE = re.compile(r"<url:[0-9a-f]+>")
 MENTION_RE = re.compile(r"<@[!&]?\d+>")
@@ -409,7 +433,7 @@ async def on_message(message: discord.Message):
 
 if __name__ == "__main__":
     if not TOKEN:
-        raise SystemExit("[error] TOKEN missing (.env or environment)")
+        raise SystemExit("[error] DISCORD_TOKEN missing - put it in .env")
     if not GUILD_ID or not CHANNEL_ID:
-        raise SystemExit("[error] GUILD and CHANNEL must be set in .env")
+        raise SystemExit("[error] guild and channel must be set in config.toml")
     client.run(TOKEN)

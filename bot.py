@@ -30,6 +30,7 @@ Config (.env / environment):
                         note: @everyone/@here are ALWAYS stripped from replies
     RETRIEVAL           true|false  try url retrieval first        (default true)
     RETRIEVAL_THRESHOLD 0..1 minimum query coverage to send a link (default 0.6)
+    RETRIEVAL_TOPN      pick at random among the N best matches     (default 5, 1 = always best)
     MARKOV_TEST_OUTPUT  true|false  markovify's verbatim-copy filter (default true)
     CORPUS_DEDUPE       true|false  train on unique lines only     (default true)
 """
@@ -78,6 +79,9 @@ DM_LOG = os.getenv("DM_LOG", "dms.jsonl")
 OUTGOING_MENTIONS = os.getenv("OUTGOING_MENTIONS", "block").strip().lower()
 RETRIEVAL = env_bool("RETRIEVAL", True)
 RETRIEVAL_THRESHOLD = float(os.getenv("RETRIEVAL_THRESHOLD") or 0.6)
+# keep this many of the best-scoring matches and pick one at random, so the same
+# input does not always produce the same paste. 1 = strict best match.
+RETRIEVAL_TOPN = max(1, int(os.getenv("RETRIEVAL_TOPN") or 5))
 MARKOV_TEST_OUTPUT = env_bool("MARKOV_TEST_OUTPUT", True)
 # train on unique lines only: the corpus is 35% duplicates, which skews output
 CORPUS_DEDUPE = env_bool("CORPUS_DEDUPE", True)
@@ -115,7 +119,6 @@ media = {}            # "<url:HASH>" -> url
 media_kind = {}       # "<url:HASH>" -> gif|image|link
 keyword_index = {}    # slug word -> [url]
 pair_index = []       # (word set of the message being replied to, url)
-gif_urls = []         # every url token seen, for fallback picking
 
 
 def is_sendable(url, kind="link"):
@@ -168,10 +171,10 @@ def wordset(text):
 
 def load_model(bot_id=None):
     """Train the Markov chain and build the retrieval index in one pass."""
-    global model, corpus_size, pair_index, gif_urls
+    global model, corpus_size, pair_index
     if not os.path.exists(DATA_FILE):
         print(f"[model] {DATA_FILE} not found - run scraper.py first")
-        model, corpus_size, pair_index, gif_urls = None, 0, [], []
+        model, corpus_size, pair_index = None, 0, []
         return
 
     latest = {}          # dedupe by id, last record wins
@@ -221,7 +224,7 @@ def load_model(bot_id=None):
                     pairs.extend((parent_words, u) for u in urls)
 
     corpus_size = len(corpus)
-    pair_index, gif_urls = pairs, gifs
+    pair_index = pairs
     if not corpus:
         print(f"[model] {DATA_FILE} has no usable messages")
         model = None
@@ -249,29 +252,36 @@ def generate_reply(prompt, bot_id=None):
 
 
 def retrieve(prompt):
-    """Find a url someone actually posted in reply to a similar message."""
+    """Find a url someone actually posted in reply to a similar message.
+
+    Scored by word overlap with the message the paste originally replied to, so the
+    choice is always context-driven. Among the RETRIEVAL_TOPN best-scoring matches
+    one is picked at random, so the same input does not always send the same paste.
+    """
     q = wordset(prompt)
     if not q:
         return None
-    best, best_score = None, 0.0
+
+    scores = {}
     for words, url in pair_index:
         shared = len(q & words)
         if shared < 2:
             continue
         score = shared / len(q)
-        if score > best_score:
-            best, best_score = url, score
-    if best and best_score >= RETRIEVAL_THRESHOLD:
-        return best
+        if score >= RETRIEVAL_THRESHOLD and score > scores.get(url, 0.0):
+            scores[url] = score
+    if scores:
+        top = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:RETRIEVAL_TOPN]
+        return random.choice(top)[0]
 
     hits = {}
     for word in q:
         for url in keyword_index.get(word, ()):
             hits[url] = hits.get(url, 0) + 1
     if hits:
-        url, n = max(hits.items(), key=lambda kv: kv[1])
+        best_url, n = max(hits.items(), key=lambda kv: kv[1])
         if n >= 3:
-            return url
+            return best_url
     return None
 
 

@@ -94,6 +94,7 @@ Everything except the three IDs is optional.
 | `OUTGOING_MENTIONS` | `block` | bot | see below |
 | `RETRIEVAL` | `true` | bot | try the url-retrieval path first |
 | `RETRIEVAL_THRESHOLD` | `0.6` | bot | query coverage needed to send a link |
+| `RETRIEVAL_TOPN` | `5` | bot | pick at random among the N best matches (`1` = always the best) |
 | `RETRIEVAL_KINDS` | `gif,image,link` | bot | which paste kinds may be sent |
 | `CORPUS_DEDUPE` | `true` | bot | train on unique lines only |
 | `MARKOV_TEST_OUTPUT` | `true` | bot | markovify's verbatim-copy filter |

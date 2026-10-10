@@ -20,38 +20,31 @@ unfiltered as your server is. A true mirror.
 
 ## Quickstart
 
-This is the shortest path to get the bot running locally.
-
-1. Clone the project and enter the folder.
-2. Create a virtual environment and install the Python dependencies.
-3. Copy the environment example file and add your Discord bot token.
-4. Run the scraper to download and build the training corpus from your server history.
-5. Start the bot so it can answer in the configured Discord channel, DM, or when mentioned.
-
 ```bash
+# 1. Clone & set up environment
 git clone https://github.com/Bittu5134/DumbCord.git && cd DumbCord
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env          # paste your bot token into .env
-python scraper.py             # downloads chat history and builds the knowledge base
-python bot.py                 # starts the bot and begins replying
+
+# 2. Configure credentials & target channels
+cp .env.example .env          # paste your DISCORD_TOKEN
+# adjust server & channel IDs in config.toml if needed
+
+# 3. Scrape history & run
+python scraper.py             # download messages (press Enter for max history)
+python bot.py                 # start listening and replying
 ```
 
-`config.toml` is already set up with the default server/channel IDs, so you can get started quickly without extra edits. If you want to change which server or channel it listens to, see the configuration guide.
+> **Note:** Requires **Python 3.11+** and **Message Content Intent** enabled in your [Discord Developer Portal](USAGE.md#discord-developer-portal-setup).
 
-This project requires **Python 3.11+** and a Discord bot with **Message Content Intent** enabled in the developer portal ([portal setup](USAGE.md#discord-developer-portal-setup)).
+### Interacting with the Bot
 
-After the initial scrape, run `python scraper.py` again anytime you want to refresh what the bot has learned. You can also use [`!dumb_reload`](USAGE.md#reloading) to retrain the bot without restarting it.
+- `@DumbCord <message>` anywhere in the server
+- Direct message the bot
+- Chat directly in the configured channel
+- Use `!dumb_reload` after scraping new messages to retrain on the fly
 
-<sub>[Full configuration](USAGE.md#configuration) · [Troubleshooting](USAGE.md#troubleshooting)</sub>
-
-### Basic Usage
-
-Once the bot is online, you can:
-
-- Mention it with `@DumbCord your message`
-- Send it a direct message
-- Talk in the configured channel
+<sub>[Detailed configuration & troubleshooting →](USAGE.md)</sub>
 
 <br>
 

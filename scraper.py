@@ -16,6 +16,10 @@ Behaviour:
     * Edited messages are appended again (same id); consumers keep the last record.
     * Messages authored by the bot itself (and, by default, any bot) are never saved.
     * Messages with no text are skipped (controlled by SKIP_EMPTY).
+    * Stored content is VERBATIM - mentions, roles and @everyone/@here are kept
+      exactly as typed. The only change is pasted URLs becoming <url:HASH> tokens
+      (URL_TOKENS), which is what the retrieval index in bot.py matches on.
+      No ping neutralisation happens here; bot.py does that at reply time.
     * Progress lives in chat_state.json, data in messages.jsonl (.env for config).
 
 Config (.env / environment):
@@ -76,16 +80,10 @@ SKIP_EMPTY = env_bool("SKIP_EMPTY", True)
 EDIT_SCAN = int(os.getenv("EDIT_SCAN") or 200)
 
 # --- URL tokenisation ---
+# Stored content is otherwise verbatim: mentions, roles and @everyone/@here are
+# kept exactly as written. All ping neutralisation happens at reply time (bot.py).
 MEDIA_FILE = os.getenv("MEDIA_FILE", "media.jsonl")
 URL_TOKENS = env_bool("URL_TOKENS", True)
-
-# --- mention handling in the training corpus ---
-# user mentions: keep (default) | name | strip | token
-MENTION_MODE = os.getenv("MENTION_MODE", "keep").strip().lower()
-# role mentions: name (default) | strip | token | keep
-ROLE_MENTION_MODE = os.getenv("ROLE_MENTION_MODE", "name").strip().lower()
-# @everyone / @here are always neutralised (zero-width separator, no ping)
-SANITIZE_EVERYONE = env_bool("SANITIZE_EVERYONE", True)
 
 
 def now_iso():
@@ -95,11 +93,6 @@ def now_iso():
 # ------------------------------------------------------------ lean records ---
 
 URL_RE = re.compile(r"https?://[^\s<>\"'`]+")
-ROLE_RE = re.compile(r"<@&(\d+)>")
-USER_RE = re.compile(r"<@!?(\d+)>")
-EVERYONE_RE = re.compile(r"@(everyone|here)")
-MEDIA_RE = re.compile(r"<url:([0-9a-f]+)>")
-ZWSP = "\u200b"
 
 
 def _kind(url):
@@ -185,47 +178,15 @@ class MediaStore:
         self.pending.clear()
 
 
-def sanitize_text(content, message, media):
-    """Tokenise URLs, neutralise @everyone/@here and sanitise role mentions.
+def tokenise_urls(content, media):
+    """Replace pasted links with stable <url:HASH> tokens - nothing else.
 
-    User mentions are left untouched by default so the model can learn them.
+    Mentions, roles and @everyone/@here are stored exactly as typed. All ping
+    neutralisation happens at reply time in bot.py.
     """
-    if not content:
+    if not content or not URL_TOKENS:
         return content
-
-    if URL_TOKENS:
-        content = URL_RE.sub(lambda m: media.token(clean_url(m.group(0))), content)
-
-    if ROLE_MENTION_MODE != "keep":
-        roles = {str(r.id): r.name for r in getattr(message, "role_mentions", [])}
-
-        def _role(m):
-            if ROLE_MENTION_MODE == "token":
-                return f"<role:{m.group(1)}>"
-            if ROLE_MENTION_MODE == "strip":
-                return ""
-            name = roles.get(m.group(1))
-            return f"@{name}" if name else "@role"
-
-        content = ROLE_RE.sub(_role, content)
-
-    if MENTION_MODE != "keep":
-        users = {str(u.id): (u.display_name or u.name) for u in getattr(message, "mentions", [])}
-
-        def _user(m):
-            if MENTION_MODE == "token":
-                return f"<user:{m.group(1)}>"
-            if MENTION_MODE == "strip":
-                return ""
-            name = users.get(m.group(1))
-            return f"@{name}" if name else "@user"
-
-        content = USER_RE.sub(_user, content)
-
-    if SANITIZE_EVERYONE:
-        content = EVERYONE_RE.sub(lambda m: f"@{ZWSP}{m.group(1)}", content)
-
-    return content
+    return URL_RE.sub(lambda m: media.token(clean_url(m.group(0))), content)
 
 
 def lean_record(message: discord.Message, media) -> dict:
@@ -234,7 +195,7 @@ def lean_record(message: discord.Message, media) -> dict:
         "id": message.id,
         "author_id": message.author.id,
         "author": message.author.display_name or message.author.name,
-        "content": sanitize_text(message.content, message, media),
+        "content": tokenise_urls(message.content, media),
         "created_at": message.created_at.isoformat(),
     }
     if message.author.bot:

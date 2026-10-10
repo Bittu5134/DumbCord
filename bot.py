@@ -11,8 +11,11 @@ Two reply paths:
   2. markov     - a Markov chain trained on the text, with any <url:...> tokens
                   it emits resolved back to the real URL
 
-Bot-authored messages are never trained on. Outgoing mentions are controlled by
-OUTGOING_MENTIONS; @everyone/@here are always neutralised unless explicitly allowed.
+Bot-authored messages are never trained on.
+
+The corpus is stored verbatim (only pasted URLs are <url:...> tokens), so the bot
+CAN generate real mentions - including @everyone and role mentions. Every ping is
+therefore neutralised at reply time by OUTGOING_MENTIONS + sanitize_outgoing().
 
 Config (.env / environment):
     TOKEN               discord bot token                       (required)

@@ -1,34 +1,4 @@
-"""
-scraper.py - download Discord channel history into a lean, bot-ready dataset.
-
-Deps:  pip install "discord.py>=2.3"
-
-Usage:
-    python scraper.py                 # asks how many messages to save (Enter = all)
-    python scraper.py --limit 5000    # save at most 5000 more messages this run
-    python scraper.py --all           # no limit
-    python scraper.py --watch         # keep running + capture live messages after backfill
-    python scraper.py --no-check-edits
-
-Behaviour:
-    * First run walks the channel backwards, oldest run resumes where it left off.
-    * Every run first catches up on messages posted since the last run.
-    * Edited messages are appended again (same id); consumers keep the last record.
-    * Messages authored by the bot itself (and, by default, any bot) are never saved.
-    * Messages with no text are skipped (controlled by SKIP_EMPTY).
-    * Stored content is VERBATIM - mentions, roles and @everyone/@here are kept
-      exactly as typed. The only change is pasted URLs becoming <url:HASH> tokens
-      (URL_TOKENS), which is what the retrieval index in bot.py matches on.
-      No ping neutralisation happens here; bot.py does that at reply time.
-    * Progress lives in chat_state.json, data in messages.jsonl.
-
-Config:
-    .env          DISCORD_TOKEN only - the one secret, never committed
-    config.toml   everything else; keys used here live under [discord] and [scraper]:
-                    guild, scrape_channel (falls back to channel)
-                    data_file, state_file, media_file
-                    url_tokens, skip_bots, skip_empty, edit_scan
-"""
+"""Backfill + live-watch a Discord channel into a lean, bot-ready JSONL dataset."""
 
 import argparse
 import asyncio
@@ -38,89 +8,34 @@ import os
 import re
 import signal
 import sys
-import tomllib
 from datetime import datetime, timezone
 
 import discord
 
-# ------------------------------------------------------------------ config ---
+from config import CFG, read_jsonl
 
-def load_dotenv(path=".env"):
-    """Read .env - the bot token is the only thing that lives there."""
-    if not os.path.exists(path):
-        return
-    with open(path, "r", encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, val = line.split("=", 1)
-            os.environ.setdefault(key.strip(), val.strip().strip("'\""))
-
-
-CONFIG_FILE = "config.toml"
-
-DEFAULTS = {
-    "guild": 0, "channel": 0, "scrape_channel": 0, "owner": 0,
-    "data_file": "messages.jsonl", "state_file": "chat_state.json",
-    "media_file": "media.jsonl", "url_tokens": True, "skip_bots": True,
-    "skip_empty": True, "edit_scan": 200,
-    "chat_log": "chats.jsonl", "dm_log": "dms.jsonl",
-    "outgoing_mentions": "block", "retrieval": True, "retrieval_threshold": 0.6,
-    "retrieval_topn": 5, "retrieval_kinds": ["gif", "image", "link"],
-    "corpus_dedupe": True, "markov_test_output": True,
-}
-
-
-def load_config(path=CONFIG_FILE):
-    """Read config.toml; sections are flattened. A missing file means defaults."""
-    cfg = dict(DEFAULTS)
-    if not os.path.exists(path):
-        print(f"[config] {path} not found, using built-in defaults")
-        return cfg
-    with open(path, "rb") as fh:
-        raw = tomllib.load(fh)
-    for key, value in raw.items():
-        if isinstance(value, dict):
-            cfg.update(value)
-        else:
-            cfg[key] = value
-    return cfg
-
-
-load_dotenv()
-CFG = load_config()
-
-# the token is the only secret, so it is the only thing read from the environment
 TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = int(CFG["guild"] or 0)
-# channel the bot replies in (bot.py) - also the scraper fallback target
 CHANNEL_ID = int(CFG["channel"] or 0)
-# channel scraper.py trains from; defaults to the reply channel when unset
 SCRAPE_CHANNEL_ID = int(CFG["scrape_channel"] or 0) or CHANNEL_ID
 DATA_FILE = str(CFG["data_file"] or "messages.jsonl")
 STATE_FILE = str(CFG["state_file"] or "chat_state.json")
+MEDIA_FILE = str(CFG["media_file"] or "media.jsonl")
+URL_TOKENS = bool(CFG["url_tokens"])
 SKIP_BOTS = bool(CFG["skip_bots"])
 SKIP_EMPTY = bool(CFG["skip_empty"])
 EDIT_SCAN = int(CFG["edit_scan"] or 200)
 
-# --- URL tokenisation ---
-# Stored content is otherwise verbatim: mentions, roles and @everyone/@here are
-# kept exactly as written. All ping neutralisation happens at reply time (bot.py).
-MEDIA_FILE = str(CFG["media_file"] or "media.jsonl")
-URL_TOKENS = bool(CFG["url_tokens"])
+URL_RE = re.compile(r"https?://[^\s<>\"'`]+")
+TRAILING_PUNCT = ".,;:!?\"'"
+CLOSERS = (("(", ")"), ("[", "]"), ("{", "}"))
 
 
 def now_iso():
     return datetime.now(timezone.utc).isoformat()
 
 
-# ------------------------------------------------------------ lean records ---
-
-URL_RE = re.compile(r"https?://[^\s<>\"'`]+")
-
-
-def _kind(url):
+def url_kind(url):
     low = url.lower()
     if any(h in low for h in ("klipy.com", "tenor.com", "giphy.com")):
         return "gif"
@@ -129,20 +44,15 @@ def _kind(url):
     return "link"
 
 
-def _slug(url):
+def url_slug(url):
     seg = url.split("?")[0].rstrip("/").split("/")[-1]
     words = [w for w in re.split(r"[-_.]+", seg) if len(w) > 2 and not w.isdigit()]
     return "-".join(words[:6])
 
 
-_TRAILING_PUNCT = ".,;:!?\"'"
-_CLOSERS = (("(", ")"), ("[", "]"), ("{", "}"))
-
-
 def clean_url(url):
-    """Strip punctuation that chat text glues onto a link, e.g. markdown (url)"""
-    url = url.rstrip(_TRAILING_PUNCT)
-    for opener, closer in _CLOSERS:
+    url = url.rstrip(TRAILING_PUNCT)
+    for opener, closer in CLOSERS:
         while url.endswith(closer) and url.count(opener) < url.count(closer):
             url = url[:-1]
     return url
@@ -159,21 +69,11 @@ class MediaStore:
         self._load()
 
     def _load(self):
-        if not os.path.exists(self.path):
-            return
-        with open(self.path, "r", encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                tok, url = rec.get("token"), rec.get("url")
-                if tok and url:
-                    self.by_token[tok] = url
-                    self.by_url[url] = tok
+        for rec in read_jsonl(self.path):
+            tok, url = rec.get("token"), rec.get("url")
+            if tok and url:
+                self.by_token[tok] = url
+                self.by_url[url] = tok
         print(f"[media] {len(self.by_token)} url token(s) known")
 
     def token(self, url):
@@ -190,7 +90,7 @@ class MediaStore:
         host = re.sub(r"^https?://(?:www\.)?", "", url).split("/")[0]
         self.pending.append({
             "token": tok, "url": url, "host": host,
-            "slug": _slug(url), "kind": _kind(url), "added_at": now_iso(),
+            "slug": url_slug(url), "kind": url_kind(url), "added_at": now_iso(),
         })
         return tok
 
@@ -204,18 +104,12 @@ class MediaStore:
 
 
 def tokenise_urls(content, media):
-    """Replace pasted links with stable <url:HASH> tokens - nothing else.
-
-    Mentions, roles and @everyone/@here are stored exactly as typed. All ping
-    neutralisation happens at reply time in bot.py.
-    """
     if not content or not URL_TOKENS:
         return content
     return URL_RE.sub(lambda m: media.token(clean_url(m.group(0))), content)
 
 
 def lean_record(message: discord.Message, media) -> dict:
-    """Only the fields the reply bot / trainer actually needs."""
     record = {
         "id": message.id,
         "author_id": message.author.id,
@@ -234,17 +128,15 @@ def lean_record(message: discord.Message, media) -> dict:
 
 class Scraper:
     def __init__(self, limit, check_edits=True):
-        self.limit = limit                 
+        self.limit = limit
         self.check_edits = check_edits
-        self.self_id = None                
+        self.self_id = None
         self.state = self._load_state()
-        self.seen = set()                 
-        self.edited = {}                   
+        self.seen = set()
+        self.edited = {}
         self.data_handle = None
         self.media = MediaStore()
         self._load_index()
-
-    # ---- state -------------------------------------------------------------
 
     def _default_state(self):
         return {
@@ -262,7 +154,7 @@ class Scraper:
     def _load_state(self):
         if os.path.exists(STATE_FILE):
             try:
-                with open(STATE_FILE, "r", encoding="utf-8") as fh:
+                with open(STATE_FILE, encoding="utf-8") as fh:
                     state = json.load(fh)
             except Exception as exc:
                 print(f"[warn] could not read {STATE_FILE}: {exc}")
@@ -286,27 +178,14 @@ class Scraper:
             json.dump(self.state, fh, indent=2)
         os.replace(tmp, STATE_FILE)
 
-    # ---- disk index --------------------------------------------------------
-
     def _load_index(self):
-        """One pass over the dataset: collect ids + edited timestamps."""
-        if not os.path.exists(DATA_FILE):
-            return
-        with open(DATA_FILE, "r", encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                rid = rec.get("id")
-                if rid is None:
-                    continue
-                self.seen.add(int(rid))
-                if rec.get("edited_at"):
-                    self.edited[int(rid)] = rec["edited_at"]
+        for rec in read_jsonl(DATA_FILE):
+            rid = rec.get("id")
+            if rid is None:
+                continue
+            self.seen.add(int(rid))
+            if rec.get("edited_at"):
+                self.edited[int(rid)] = rec["edited_at"]
         self.state["total_messages_saved"] = len(self.seen)
         print(f"[init] {len(self.seen)} messages already on disk")
         if self.edited:
@@ -322,29 +201,20 @@ class Scraper:
         self.save_state()
 
     def close(self):
+        self.flush()
         if self.data_handle and not self.data_handle.closed:
-            self.data_handle.flush()
             self.data_handle.close()
-        self.media.flush()
-        self.save_state()
-
-    # ---- filtering ---------------------------------------------------------
 
     def wanted(self, message: discord.Message) -> bool:
-        """Should this message be stored as training data?"""
         if self.self_id and message.author.id == self.self_id:
             return False
         if SKIP_BOTS and message.author.bot:
             return False
-        if SKIP_EMPTY and not (message.content or "").strip():
-            return False
-        return True
+        return not (SKIP_EMPTY and not (message.content or "").strip())
 
     def write(self, message: discord.Message, force=False) -> bool:
-        """Append a lean record. force=True allows re-writing edited messages."""
-        if not force:
-            if message.id in self.seen or not self.wanted(message):
-                return False
+        if not force and (message.id in self.seen or not self.wanted(message)):
+            return False
         self.data_handle.write(
             json.dumps(lean_record(message, self.media), ensure_ascii=False) + "\n"
         )
@@ -363,10 +233,7 @@ class Scraper:
             self.state["newest_message_id"] = message.id
             self.state["newest_message_timestamp"] = message.created_at.isoformat()
 
-    # ---- phases ------------------------------------------------------------
-
     async def catch_up(self, channel):
-        """Fetch everything posted since the last run."""
         newest = self.state.get("newest_message_id")
         if not newest:
             return 0
@@ -386,7 +253,6 @@ class Scraper:
         return saved
 
     async def backfill(self, channel):
-        """Walk backwards through history, resuming from the oldest saved id."""
         if self.state.get("reached_beginning"):
             print("[backfill] channel already fully downloaded")
             return 0
@@ -423,7 +289,6 @@ class Scraper:
         return saved
 
     async def check_recent_edits(self, channel):
-        """Re-read the most recent messages and append changed ones."""
         if not self.check_edits or EDIT_SCAN <= 0:
             return 0
         updated = 0
@@ -439,8 +304,6 @@ class Scraper:
             print(f"[edits] {updated} edited message(s) updated")
         return updated
 
-    # ---- live --------------------------------------------------------------
-
     async def on_live_message(self, message):
         if message.channel.id != SCRAPE_CHANNEL_ID or message.author.id == self.self_id:
             return
@@ -450,14 +313,12 @@ class Scraper:
             print(f"[live] saved {message.id}")
 
 
-# ------------------------------------------------------------------ client ---
-
 intents = discord.Intents.default()
 intents.guilds = True
 intents.message_content = True
 
 client = discord.Client(intents=intents)
-scraper = None          # built in main()
+scraper = None
 watch_mode = False
 
 
@@ -516,8 +377,6 @@ async def on_message_edit(_before, after):
                 print(f"[live] updated {after.id}")
 
 
-# ------------------------------------------------------------------- entry ---
-
 def ask_limit():
     try:
         raw = input("How many messages to save this run? "
@@ -541,8 +400,8 @@ def parse_args():
     parser.add_argument("--all", action="store_true", help="no limit")
     parser.add_argument("--watch", action="store_true", help="stay online and capture new messages")
     parser.add_argument("--no-check-edits", action="store_true", help="skip the edit re-scan")
-    parser.add_argument("--channel", type=int, help="override CHANNEL")
-    parser.add_argument("--guild", type=int, help="override GUILD")
+    parser.add_argument("--channel", type=int, help="override the scrape channel id")
+    parser.add_argument("--guild", type=int, help="override the guild id")
     return parser.parse_args()
 
 

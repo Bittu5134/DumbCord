@@ -22,5 +22,5 @@ downloads/
 __pycache__/
 *.py[cod]
 
-# local-only scripts (kept out of the two-file repo)
+# local-only scripts (kept out of git)
 extract_images.py

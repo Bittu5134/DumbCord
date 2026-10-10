@@ -1,95 +1,17 @@
-"""
-bot.py - replies to DMs, @mentions and messages in one configured channel.
-
-Deps:  pip install "discord.py>=2.3" markovify
-
-Run:   python bot.py
-
-Two reply paths:
-  1. retrieval  - a learned "someone said X, someone posted this paste" match
-                  (built from reply_to links + <url:...> tokens) sends the URL
-  2. markov     - a Markov chain trained on the text, with any <url:...> tokens
-                  it emits resolved back to the real URL
-
-Bot-authored messages are never trained on.
-
-The corpus is stored verbatim (only pasted URLs are <url:...> tokens), so the bot
-CAN generate real mentions - including @everyone and role mentions. Every ping is
-therefore neutralised at reply time by OUTGOING_MENTIONS + sanitize_outgoing().
-
-Config:
-    .env          DISCORD_TOKEN only - the one secret, never committed
-    config.toml   everything else: guild, channels, retrieval, logs, log files
-
-Key config.toml values under [bot]:
-    outgoing_mentions   block | silent | allow_users | allow_all   (default block)
-                        note: @everyone/@here are ALWAYS stripped from replies
-    retrieval           try url retrieval first                    (default true)
-    retrieval_threshold 0..1 query coverage needed to send a link (default 0.6)
-    retrieval_topn      pick at random among the N best matches    (default 5, 1 = best)
-    markov_test_output  markovify's verbatim-copy filter           (default true)
-    corpus_dedupe       train on unique lines only                 (default true)
-"""
+"""Reply bot: answers DMs, @mentions and one configured channel from a scraped corpus."""
 
 import json
 import os
 import random
 import re
-import tomllib
+from collections import Counter
 from datetime import datetime, timezone
 
 import discord
 import markovify
 
-# ------------------------------------------------------------------ config ---
+from config import CFG, read_jsonl
 
-def load_dotenv(path=".env"):
-    """Read .env - the bot token is the only thing that lives there."""
-    if not os.path.exists(path):
-        return
-    with open(path, "r", encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, val = line.split("=", 1)
-            os.environ.setdefault(key.strip(), val.strip().strip("'\""))
-
-
-CONFIG_FILE = "config.toml"
-
-DEFAULTS = {
-    "guild": 0, "channel": 0, "scrape_channel": 0, "owner": 0,
-    "data_file": "messages.jsonl", "state_file": "chat_state.json",
-    "media_file": "media.jsonl", "url_tokens": True, "skip_bots": True,
-    "skip_empty": True, "edit_scan": 200,
-    "chat_log": "chats.jsonl", "dm_log": "dms.jsonl",
-    "outgoing_mentions": "block", "retrieval": True, "retrieval_threshold": 0.6,
-    "retrieval_topn": 5, "retrieval_kinds": ["gif", "image", "link"],
-    "corpus_dedupe": True, "markov_test_output": True,
-}
-
-
-def load_config(path=CONFIG_FILE):
-    """Read config.toml; sections are flattened. A missing file means defaults."""
-    cfg = dict(DEFAULTS)
-    if not os.path.exists(path):
-        print(f"[config] {path} not found, using built-in defaults")
-        return cfg
-    with open(path, "rb") as fh:
-        raw = tomllib.load(fh)
-    for key, value in raw.items():
-        if isinstance(value, dict):
-            cfg.update(value)
-        else:
-            cfg[key] = value
-    return cfg
-
-
-load_dotenv()
-CFG = load_config()
-
-# the token is the only secret, so it is the only thing read from the environment
 TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = int(CFG["guild"] or 0)
 CHANNEL_ID = int(CFG["channel"] or 0)
@@ -102,12 +24,10 @@ DM_LOG = str(CFG["dm_log"] or "dms.jsonl")
 OUTGOING_MENTIONS = str(CFG["outgoing_mentions"] or "block").strip().lower()
 RETRIEVAL = bool(CFG["retrieval"])
 RETRIEVAL_THRESHOLD = float(CFG["retrieval_threshold"] or 0.6)
-# pick at random among the N best matches so the same input varies; 1 = strict best
 RETRIEVAL_TOPN = max(1, int(CFG["retrieval_topn"] or 5))
 MARKOV_TEST_OUTPUT = bool(CFG["markov_test_output"])
-# train on unique lines only: the corpus is heavily duplicated, which skews output
 CORPUS_DEDUPE = bool(CFG["corpus_dedupe"])
-# which media kinds may be sent by the retrieval path (media.jsonl "kind")
+
 _kinds = CFG["retrieval_kinds"]
 if isinstance(_kinds, str):
     _kinds = _kinds.split(",")
@@ -116,8 +36,9 @@ RETRIEVAL_KINDS = {str(k).strip().lower() for k in _kinds if str(k).strip()}
 TOKEN_RE = re.compile(r"<url:[0-9a-f]+>")
 MENTION_RE = re.compile(r"<@[!&]?\d+>")
 RAW_URL_RE = re.compile(r"https?://\S+")
-EVERYONE_RE = re.compile(r"@(everyone|here)\b", re.IGNORECASE)
+EVERYONE_RE = re.compile(r"@(?:everyone|here)\b", re.IGNORECASE)
 NONWORD_RE = re.compile(r"[^a-z0-9']+")
+SQUASH_RE = re.compile(r"\s{2,}")
 
 STOPWORDS = {
     "the", "and", "you", "your", "yours", "for", "with", "that", "this", "these", "those",
@@ -135,57 +56,40 @@ FALLBACKS = [
     "I'm not sure how to reply to that!",
 ]
 
-# ----------------------------------------------------------------- state ------
-
 model = None
 corpus_size = 0
-media = {}            # "<url:HASH>" -> url
-media_kind = {}       # "<url:HASH>" -> gif|image|link
-keyword_index = {}    # slug word -> [url]
-pair_index = []       # (word set of the message being replied to, url)
+media = {}
+media_kind = {}
+keyword_index = {}
+pair_index = []
 
 
-def is_sendable(url, kind="link"):
-    """Skip links that would be dead or wrong to post as a reply."""
-    if kind not in RETRIEVAL_KINDS:
-        return False
-    if "ex=" in url:                     # signed CDN url: already expired
-        return False
-    return True
+def is_sendable(url, kind):
+    return kind in RETRIEVAL_KINDS and "ex=" not in url
 
 
 def load_media():
-    """Load the token -> url map written by scraper.py."""
     global media, media_kind, keyword_index
     media, media_kind, keyword_index = {}, {}, {}
     if not os.path.exists(MEDIA_FILE):
         print(f"[media] {MEDIA_FILE} not found - url tokens stay unresolved")
         return
-    with open(MEDIA_FILE, "r", encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rec = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            tok, url = rec.get("token"), rec.get("url")
-            if not tok or not url:
-                continue
-            media[tok] = url
-            media_kind[tok] = rec.get("kind") or "link"
-            if not is_sendable(url, media_kind[tok]):
-                continue
-            for word in (rec.get("slug") or "").split("-"):
-                if len(word) > 2 and word not in STOPWORDS:
-                    keyword_index.setdefault(word, []).append(url)
+    for rec in read_jsonl(MEDIA_FILE):
+        tok, url = rec.get("token"), rec.get("url")
+        if not tok or not url:
+            continue
+        media[tok] = url
+        media_kind[tok] = rec.get("kind") or "link"
+        if not is_sendable(url, media_kind[tok]):
+            continue
+        for word in (rec.get("slug") or "").split("-"):
+            if len(word) > 2 and word not in STOPWORDS:
+                keyword_index.setdefault(word, []).append(url)
     print(f"[media] {len(media)} url token(s), {len(keyword_index)} keyword(s), "
           f"{sum(1 for u in media.values() if 'ex=' in u)} expiring link(s) skipped")
 
 
 def wordset(text):
-    """Plain matching words, with tokens/mentions/urls removed."""
     text = TOKEN_RE.sub(" ", text or "")
     text = MENTION_RE.sub(" ", text)
     text = RAW_URL_RE.sub(" ", text)
@@ -194,32 +98,20 @@ def wordset(text):
 
 
 def load_model(bot_id=None):
-    """Train the Markov chain and build the retrieval index in one pass."""
     global model, corpus_size, pair_index
     if not os.path.exists(DATA_FILE):
         print(f"[model] {DATA_FILE} not found - run scraper.py first")
         model, corpus_size, pair_index = None, 0, []
         return
 
-    latest = {}          # dedupe by id, last record wins
-    with open(DATA_FILE, "r", encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rec = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            rid = rec.get("id")
-            if rid is not None:
-                latest[rid] = rec
+    latest = {}
+    for rec in read_jsonl(DATA_FILE):
+        rid = rec.get("id")
+        if rid is not None:
+            latest[rid] = rec
 
-    corpus = []
-    seen_lines = set()
+    corpus, seen_lines, pairs, unique_urls = [], set(), [], set()
     dropped = 0
-    pairs = []
-    gifs = []
     for rec in latest.values():
         if rec.get("bot"):
             continue
@@ -230,7 +122,6 @@ def load_model(bot_id=None):
             continue
         content = content.strip()
 
-        # training corpus (deduped); the retrieval index below still sees every record
         if CORPUS_DEDUPE and content in seen_lines:
             dropped += 1
         else:
@@ -240,7 +131,7 @@ def load_model(bot_id=None):
         urls = [media[t] for t in TOKEN_RE.findall(content)
                 if t in media and is_sendable(media[t], media_kind.get(t, "link"))]
         if urls:
-            gifs.extend(urls)
+            unique_urls.update(urls)
             parent = latest.get(rec.get("reply_to")) if rec.get("reply_to") else None
             if parent and isinstance(parent.get("content"), str) and parent["content"].strip():
                 parent_words = wordset(parent["content"])
@@ -256,11 +147,10 @@ def load_model(bot_id=None):
     model = markovify.NewlineText("\n".join(corpus), state_size=2)
     extra = f" ({dropped} duplicate line(s) skipped)" if dropped else ""
     print(f"[model] trained on {corpus_size} lines{extra} | "
-          f"{len(pairs)} retrieval pair(s), {len(set(gifs))} unique url(s)")
+          f"{len(pairs)} retrieval pair(s), {len(unique_urls)} unique url(s)")
 
 
-def generate_reply(prompt, bot_id=None):
-    """A Markov reply; may still contain <url:...> tokens."""
+def generate_reply(prompt):
     if model is None:
         return "I don't have a dataset to reply from yet."
     opts = {"test_output": MARKOV_TEST_OUTPUT, "tries": 20}
@@ -276,12 +166,6 @@ def generate_reply(prompt, bot_id=None):
 
 
 def retrieve(prompt):
-    """Find a url someone actually posted in reply to a similar message.
-
-    Scored by word overlap with the message the paste originally replied to, so the
-    choice is always context-driven. Among the RETRIEVAL_TOPN best-scoring matches
-    one is picked at random, so the same input does not always send the same paste.
-    """
     q = wordset(prompt)
     if not q:
         return None
@@ -298,37 +182,22 @@ def retrieve(prompt):
         top = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:RETRIEVAL_TOPN]
         return random.choice(top)[0]
 
-    hits = {}
-    for word in q:
-        for url in keyword_index.get(word, ()):
-            hits[url] = hits.get(url, 0) + 1
+    hits = Counter(url for word in q for url in keyword_index.get(word, ()))
     if hits:
-        best_url, n = max(hits.items(), key=lambda kv: kv[1])
+        best_url, n = hits.most_common(1)[0]
         if n >= 3:
             return best_url
     return None
 
 
-# ------------------------------------------------------------ outgoing text ---
-
 def resolve_tokens(text):
-    """Replace <url:HASH> with the real url; drop unknown tokens."""
-    if not text:
-        return text
-    text = TOKEN_RE.sub(lambda m: media.get(m.group(0), ""), text)
-    return re.sub(r"\s{2,}", " ", text).strip()
+    text = TOKEN_RE.sub(lambda m: media.get(m.group(0), ""), text or "")
+    return SQUASH_RE.sub(" ", text).strip()
 
 
 def sanitize_outgoing(text):
-    """@everyone / @here are removed outright - they must never appear.
-
-    This applies in every mode, including allow_all: the reply text can never
-    contain them, so no setting can turn them back on.
-    """
-    if not text:
-        return text
-    text = EVERYONE_RE.sub("", text)
-    return re.sub(r"\s{2,}", " ", text).strip()
+    text = EVERYONE_RE.sub("", text or "")
+    return SQUASH_RE.sub(" ", text).strip()
 
 
 def allowed_mentions():
@@ -352,7 +221,8 @@ async def send_reply(message: discord.Message, text: str):
     )
 
 
-def log_reply(path, message: discord.Message, reply: str):
+def log_reply(message: discord.Message, reply: str):
+    path = DM_LOG if isinstance(message.channel, discord.DMChannel) else CHAT_LOG
     entry = {
         "ts": datetime.now(timezone.utc).isoformat(),
         "author_id": message.author.id,
@@ -365,8 +235,6 @@ def log_reply(path, message: discord.Message, reply: str):
     with open(path, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
-
-# ------------------------------------------------------------------ client ---
 
 intents = discord.Intents.default()
 intents.guilds = True
@@ -385,25 +253,22 @@ async def on_ready():
 
 
 def should_reply(message: discord.Message) -> bool:
-    if message.author == client.user or message.author.bot:
+    if message.author.bot:
         return False
     if isinstance(message.channel, discord.DMChannel):
         return True
-    if message.channel.id == CHANNEL_ID:
-        return message.guild is not None and message.guild.id == GUILD_ID
-    if client.user in message.mentions:
-        return message.guild is not None and message.guild.id == GUILD_ID
-    return False
+    matched = message.channel.id == CHANNEL_ID or client.user in message.mentions
+    return matched and message.guild is not None and message.guild.id == GUILD_ID
 
 
 @client.event
 async def on_message(message: discord.Message):
-    if message.content.strip().startswith("!dumb_reload"):
-        if OWNER_ID:
-            if message.author.id != OWNER_ID:
-                return
-        elif not isinstance(message.channel, discord.DMChannel):
-            return          # no OWNER configured -> only usable over DM
+    content = message.content or ""
+    if content.strip().startswith("!dumb_reload"):
+        if OWNER_ID and message.author.id != OWNER_ID:
+            return
+        if not OWNER_ID and not isinstance(message.channel, discord.DMChannel):
+            return
         load_media()
         load_model(client.user.id)
         await message.reply(f"Reloaded: {corpus_size} lines, {len(media)} url tokens.")
@@ -412,23 +277,15 @@ async def on_message(message: discord.Message):
     if not should_reply(message):
         return
 
-    content = message.content or ""
-
-    if RETRIEVAL:
-        url = retrieve(content)
-        if url:
-            await send_reply(message, sanitize_outgoing(url))
-            log_reply(DM_LOG if isinstance(message.channel, discord.DMChannel) else CHAT_LOG,
-                      message, url)
-            return
-
-    reply = sanitize_outgoing(resolve_tokens(generate_reply(content, client.user.id)))
+    reply = retrieve(content) if RETRIEVAL else None
+    if not reply:
+        reply = resolve_tokens(generate_reply(content))
+    reply = sanitize_outgoing(reply)
     if not reply:
         return
 
     await send_reply(message, reply)
-    log_reply(DM_LOG if isinstance(message.channel, discord.DMChannel) else CHAT_LOG,
-              message, reply)
+    log_reply(message, reply)
 
 
 if __name__ == "__main__":

@@ -5,40 +5,99 @@
 
 `@mention it` · `DM it` · or just talk in the configured channel
 
-## How it works
+---
 
-Two scripts, one dataset:
+## Contents
 
-| file | role |
-|---|---|
-| `scraper.py` | backfills + live-watches a channel into `messages.jsonl` |
-| `bot.py` | answers DMs, `@mentions` and one channel, using `messages.jsonl` |
+- [What it does](#what-it-does)
+- [How it works](#how-it-works)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Discord developer portal setup](#discord-developer-portal-setup)
+- [Configuration](#configuration)
+- [Usage](#usage)
+- [Data files](#data-files)
+- [Project structure](#project-structure)
+- [Troubleshooting](#troubleshooting)
+- [Built with](#built-with)
+
+## What it does
+
+ChatCord turns one Discord channel into a training corpus and a reply bot:
+
+1. **`scraper.py`** downloads a channel's full history into a lean JSONL dataset, then can
+   stay online to keep capturing new messages.
+2. **`bot.py`** learns from that dataset and replies to DMs, `@mentions` and every message
+   in one configured channel.
 
 The channel it **learns from** (`discord.scrape_channel`) and the channel it **replies in**
-(`discord.channel`) are separate settings — they can be the same channel or two different ones.
+(`discord.channel`) are separate settings — point them at the same channel for a bot that
+chats where it learned, or at two different channels to keep the training ground quiet.
 
-Stored content is **verbatim** — mentions, roles and `@everyone` are kept exactly as typed.
-The only transformation is pasted URLs becoming `<url:HASH>` tokens, mapped in `media.jsonl`;
-that is what the retrieval index matches on. Messages authored by a bot (including this bot)
-and messages with no text are never stored.
+There is no LLM, no API key and no upload step: replies are either a URL someone actually
+posted (Discord auto-embeds it) or a Markov chain trained on the corpus.
+
+## How it works
+
+```
+channel history ──▶ scraper.py ──▶ messages.jsonl   (the corpus, verbatim)
+                                   media.jsonl      (<url:HASH> → url map)
+                                   chat_state.json  (resume point)
+
+messages.jsonl ──▶ bot.py ──▶ retrieval index  (learned "someone said X → paste" pairs)
+                              Markov chain     (word-level, state_size = 2)
+                     └─▶ replies to DMs / @mentions / the configured channel
+```
+
+### The dataset
+
+Stored content is **verbatim** — mentions, roles and `@everyone`/`@here` are kept exactly as
+typed. The only transformation is pasted URLs becoming `<url:HASH>` tokens (mapped back to
+real URLs in `media.jsonl`), which keeps the corpus free of long noisy links and gives the
+retrieval index something stable to match on.
+
+Messages authored by a bot (including this bot) and messages with no text are never stored.
+Edited messages are stored again with the same id; consumers keep the last record. Reruns are
+cheap: `chat_state.json` remembers how far the scraper got.
 
 ### Two reply paths
 
-1. **Retrieval** — someone said X, someone replied with a paste. Matching learned
-   `text → url` pairs (plus slug keywords like `monica-crying`) sends that GIF/link back.
-   Discord auto-embeds a bare URL, so no upload is needed.
+1. **Retrieval** — someone said X and someone replied with a paste. The bot matches your
+   message against learned `text → url` pairs by word overlap and sends that GIF/image/link
+   back. Matches are scored by how much of your message the original context covers
+   (`retrieval_threshold`), and one of the top `retrieval_topn` matches is picked at random
+   so the same input doesn't always get the same paste. If no pair matches, a keyword path
+   matches URL slugs (e.g. `monica-crying`) against your words. Discord auto-embeds a bare
+   URL, so nothing is uploaded.
 2. **Markov** — a word-level chain (`state_size = 2`) trained on the corpus, deduplicated by
-   default. Any `<url:...>` token it emits is resolved back to a real URL.
+   default (`corpus_dedupe`) because chat corpora repeat themselves heavily. It tries to
+   start the sentence from each word of your message, then any sentence, then a canned
+   fallback. Any `<url:...>` token it emits is resolved back to the real URL.
 
-Ping neutralisation happens **at reply time, never in the dataset**: `@everyone`/`@here` are
-deleted outright, and `AllowedMentions` blocks users/roles/everyone according to
-`bot.outgoing_mentions`.
+Retrieval is tried first; if it finds nothing, the Markov path answers. Expired CDN links
+(URLs carrying an `ex=` signature) are never sent.
 
-## Setup
+### Ping safety
+
+The corpus is verbatim, so the bot *can* generate real mentions. Every ping is neutralised
+at reply time, never in the dataset:
+
+- `@everyone` / `@here` are deleted outright in **every** mode.
+- Users, roles and everyone-else pings are governed by `bot.outgoing_mentions` via discord.py's
+  `AllowedMentions` (`block` by default).
+
+## Requirements
+
+- Python **3.11+** (uses the stdlib `tomllib`)
+- A Discord bot with the **Message Content Intent** enabled
+- [discord.py](https://github.com/Rapptz/discord.py) ≥ 2.3 and [Markovify](https://github.com/jsvine/markovify)
+
+## Installation
 
 ```bash
+git clone <this repo> && cd ChatCord
 python -m venv .venv && source .venv/bin/activate
-pip install "discord.py>=2.3" markovify
+pip install -r requirements.txt
 ```
 
 Two config files, two jobs:
@@ -59,33 +118,65 @@ scrape_channel = 789    # where it learns from (falls back to channel)
 owner          = 0      # user id allowed to run !dumb_reload (0 = DM only)
 ```
 
-Enable **Message Content Intent** for the bot in the Discord developer portal, or it will
-receive empty message text.
+## Discord developer portal setup
+
+1. Create an application at <https://discord.com/developers/applications>.
+2. **Bot** tab → *Reset Token* → paste it into `.env` as `DISCORD_TOKEN`.
+3. Still on the **Bot** tab, enable **Message Content Intent** under
+   *Privileged Gateway Intents*. Without it Discord delivers empty message text and the bot
+   has nothing to learn from or reply to.
+4. **OAuth2 → URL Generator**: scope `bot`, permissions at least
+   *View Channels*, *Read Message History*, *Send Messages*. Open the generated URL and
+   invite the bot to your server.
+5. Turn on **Developer Mode** in Discord (*Settings → Advanced*), then right-click the
+   server, channel and (optionally) your own user → *Copy ID* to fill in `config.toml`.
+   To copy a user ID you need Developer Mode too: right-click the user's name.
 
 ## Usage
 
+### Scraping
+
 ```bash
 python scraper.py                 # asks how many messages to save (Enter = as many as possible)
-python scraper.py --limit 5000    # cap the backlog this run (new messages are never capped)
+python scraper.py --limit 5000    # cap the backlog this run
 python scraper.py --all           # no cap
 python scraper.py --watch         # stay online and capture new messages after backfilling
 python scraper.py --no-check-edits
-python scraper.py --channel <id> --guild <id>
+python scraper.py --channel <id> --guild <id>   # override ids from config.toml
 ```
 
 Reruns resume from `chat_state.json`: each run first catches up on messages posted since the
-last run, then continues walking backwards through history. Progress is flushed periodically
-and on Ctrl-C, so interrupting is safe.
+last run, then continues walking backwards through history. Progress is flushed every 100
+saved messages and on Ctrl-C, so interrupting is always safe. A run finishes with a quick
+re-scan of the last `edit_scan` messages to pick up edits.
+
+### Running the bot
 
 ```bash
 python bot.py
 ```
 
-## Config
+On login the bot loads `media.jsonl`, trains on `messages.jsonl`, and then replies to:
 
-All settings live in `config.toml`. Sections are flattened on load (so nesting is purely for
-readability), omitted keys fall back to the defaults below, and only the token plus the two
-channel ids are actually required.
+| trigger | where |
+|---|---|
+| any direct message | DMs |
+| `@BotName ...` | any channel in `guild` |
+| any message | the `channel` |
+
+Every reply is logged (see below).
+
+### Reloading
+
+`!dumb_reload` retrains from `data_file` without a restart — run it after re-scraping. With
+`owner` set it is owner-only; with `owner = 0` it is only accepted over DM. Restarting the
+bot does the same thing.
+
+## Configuration
+
+All settings live in `config.toml`. Sections are flattened on load (nesting is purely for
+readability), omitted keys fall back to the defaults below, and only `guild` + `channel` are
+actually required.
 
 ### `[discord]`
 
@@ -115,7 +206,7 @@ channel ids are actually required.
 | `chat_log` / `dm_log` | `chats.jsonl` / `dms.jsonl` | reply logs |
 | `outgoing_mentions` | `block` | see below |
 | `retrieval` | `true` | try the url-retrieval path first |
-| `retrieval_threshold` | `0.6` | query coverage needed to send a link |
+| `retrieval_threshold` | `0.6` | 0..1 query coverage needed to send a link |
 | `retrieval_topn` | `5` | pick at random among the N best matches (`1` = always the best) |
 | `retrieval_kinds` | `["gif", "image", "link"]` | which paste kinds may be sent |
 | `corpus_dedupe` | `true` | train on unique lines only |
@@ -130,19 +221,62 @@ channel ids are actually required.
 | `allow_users` | ✓ | ✗ | ✗ | |
 | `allow_all` | ✓ | ✓ | ✗ | `@everyone`/`@here` are always stripped regardless |
 
-## Reloading
-
-`!dumb_reload` retrains from `data_file` without a restart. With `owner` set it is owner-only;
-with `owner = 0` it is only accepted over DM. Restarting the bot does the same thing.
-
 ## Data files
 
-Gitignored and regenerated by the scripts: `messages.jsonl`, `media.jsonl`, `chat_state.json`,
-`chats.jsonl`, `dms.jsonl` — plus `.env` (the token) and `.venv/`. **`config.toml` is tracked**,
-so the repo stays runnable while the secret stays out of git.
+Everything below is gitignored and regenerated by the scripts.
 
-Log entries look like:
-`{ts, author_id, author, guild_id, channel_id, message, reply}`
+| file | written by | contents |
+|---|---|---|
+| `messages.jsonl` | scraper | one message per line, newest record wins on duplicate ids |
+| `media.jsonl` | scraper | `<url:HASH>` token → url map (one line per new URL) |
+| `chat_state.json` | scraper | resume point: oldest/newest ids, totals, `reached_beginning` |
+| `chats.jsonl` / `dms.jsonl` | bot | one log line per reply |
+| `.env` | you | the bot token — never committed |
+| `.venv/` | venv | local environment |
+
+A `messages.jsonl` record:
+
+```json
+{"id": 123, "author_id": 456, "author": "name", "content": "text with <url:0abc123def>",
+ "created_at": "2024-01-01T00:00:00+00:00", "reply_to": 100, "edited_at": "...", "bot": true}
+```
+
+A `media.jsonl` record:
+
+```json
+{"token": "<url:0abc123def>", "url": "https://...", "host": "tenor.com",
+ "slug": "monica-crying", "kind": "gif", "added_at": "2024-01-01T00:00:00+00:00"}
+```
+
+A reply log entry:
+
+```json
+{"ts": "...", "author_id": 456, "author": "name", "guild_id": 1, "channel_id": 2,
+ "message": "what the bot was replying to", "reply": "what it sent"}
+```
+
+## Project structure
+
+```
+config.py       shared config loading (.env + config.toml) and JSONL reading
+scraper.py      backfill + live-watch a channel into the dataset
+bot.py          the reply bot (retrieval + Markov)
+config.toml     all settings except the token
+requirements.txt
+```
+
+## Troubleshooting
+
+| symptom | fix |
+|---|---|
+| `[error] DISCORD_TOKEN missing` | put `DISCORD_TOKEN=...` in `.env` |
+| replies are empty / the bot ignores text | Message Content Intent is off (see setup step 3) |
+| `[error] guild ... not found` | the bot isn't in the server, or the id is wrong |
+| `[error] missing 'Read Message History' permission` | grant *Read Message History* in the channel |
+| the bot never sends GIFs/links | no reply-to pairs in the corpus yet, or `retrieval_threshold` is too high |
+| links go dead after a while | Discord CDN links expire; those (`ex=`) are skipped on purpose |
+| replies feel repetitive | lower `retrieval_topn`, keep `corpus_dedupe = true`, or scrape more history |
+| changes to `messages.jsonl` don't show | run `!dumb_reload` or restart the bot |
 
 ## Built with
 

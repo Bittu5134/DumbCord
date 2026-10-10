@@ -1,8 +1,7 @@
 # DumbCord — Detailed Usage
 
 Everything the short [README](README.md) leaves out. DumbCord learns from your server's own
-chat history and becomes its unfiltered mirror — no LLM, no API key, no filter layer. It
-turns one Discord channel into a training corpus and a reply bot:
+chat history and becomes its unfiltered mirror — no LLM, no API key, no filter layer.
 
 1. **`scraper.py`** downloads a channel's full history into a lean JSONL dataset, then can
    stay online to keep capturing new messages.
@@ -13,19 +12,32 @@ The channel it **learns from** (`discord.scrape_channel`) and the channel it **r
 (`discord.channel`) are separate settings — point them at the same channel for a bot that
 chats where it learned, or at two different channels to keep the training ground quiet.
 
-There is no LLM, no API key and no upload step: replies are either a URL someone actually
-posted (Discord auto-embeds it) or a Markov chain trained on the corpus.
-
 ## Contents
 
+- [Quickstart](#quickstart)
 - [How it works](#how-it-works)
-- [Requirements](#requirements)
 - [Discord developer portal setup](#discord-developer-portal-setup)
 - [Configuration](#configuration)
 - [Usage](#usage)
 - [Data files](#data-files)
-- [Project structure](#project-structure)
 - [Troubleshooting](#troubleshooting)
+
+## Quickstart
+
+```bash
+# 1. Clone & set up environment
+git clone https://github.com/Bittu5134/DumbCord.git && cd DumbCord
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+
+# 2. Configure credentials & target channels
+cp .env.example .env          # paste your DISCORD_TOKEN
+# adjust server & channel IDs in config.toml if needed
+
+# 3. Scrape history & run
+python scraper.py             # download messages (press Enter for max history)
+python bot.py                 # start listening and replying
+```
 
 ## How it works
 
@@ -54,15 +66,11 @@ cheap: `chat_state.json` remembers how far the scraper got.
 
 1. **Retrieval** — someone said X and someone replied with a paste. The bot matches your
    message against learned `text → url` pairs by word overlap and sends that GIF/image/link
-   back. Matches are scored by how much of your message the original context covers
-   (`retrieval_threshold`), and one of the top `retrieval_topn` matches is picked at random
-   so the same input doesn't always get the same paste. If no pair matches, a keyword path
-   matches URL slugs (e.g. `monica-crying`) against your words. Discord auto-embeds a bare
-   URL, so nothing is uploaded.
+   back. One of the top `retrieval_topn` matches is picked at random, so the same input
+   doesn't always get the same paste.
 2. **Markov** — a word-level chain (`state_size = 2`) trained on the corpus, deduplicated by
-   default (`corpus_dedupe`) because chat corpora repeat themselves heavily. It tries to
-   start the sentence from each word of your message, then any sentence, then a canned
-   fallback. Any `<url:...>` token it emits is resolved back to the real URL.
+   default (`corpus_dedupe`) because chat corpora repeat themselves heavily. Any `<url:...>`
+   token it emits is resolved back to the real URL.
 
 Retrieval is tried first; if it finds nothing, the Markov path answers. Expired CDN links
 (URLs carrying an `ex=` signature) are never sent.
@@ -76,12 +84,6 @@ at reply time, never in the dataset:
 - Users, roles and everyone-else pings are governed by `bot.outgoing_mentions` via discord.py's
   `AllowedMentions` (`block` by default).
 
-## Requirements
-
-- Python **3.11+** (uses the stdlib `tomllib`)
-- A Discord bot with the **Message Content Intent** enabled
-- [discord.py](https://github.com/Rapptz/discord.py) ≥ 2.3 and [Markovify](https://github.com/jsvine/markovify)
-
 ## Discord developer portal setup
 
 1. Create an application at <https://discord.com/developers/applications>.
@@ -94,7 +96,6 @@ at reply time, never in the dataset:
    invite the bot to your server.
 5. Turn on **Developer Mode** in Discord (*Settings → Advanced*), then right-click the
    server, channel and (optionally) your own user → *Copy ID* to fill in `config.toml`.
-   To copy a user ID you need Developer Mode too: right-click the user's name.
 
 ## Configuration
 
@@ -178,10 +179,8 @@ On login the bot loads `media.jsonl`, trains on `messages.jsonl`, and then repli
 | trigger | where |
 |---|---|
 | any direct message | DMs |
-| `@BotName ...` | any channel in `guild` |
+| `@DumbCord ...` | any channel in `guild` |
 | any message | the `channel` |
-
-Every reply is logged (see below).
 
 ### Reloading
 

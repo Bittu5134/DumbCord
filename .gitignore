@@ -1,0 +1,19 @@
+# secrets -- never commit
+.env
+
+# local env / editor
+.venv/
+.vscode/
+.wakatime-project
+
+# generated data (scraper output + bot logs)
+messages.jsonl
+chats.jsonl
+dms.jsonl
+chat_state.json
+messages.txt
+*.tmp
+
+# python
+__pycache__/
+*.py[cod]

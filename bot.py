@@ -31,6 +31,7 @@ Config (.env / environment):
     RETRIEVAL           true|false  try url retrieval first        (default true)
     RETRIEVAL_THRESHOLD 0..1 minimum query coverage to send a link (default 0.6)
     MARKOV_TEST_OUTPUT  true|false  markovify's verbatim-copy filter (default true)
+    CORPUS_DEDUPE       true|false  train on unique lines only     (default true)
 """
 
 import json
@@ -78,6 +79,8 @@ OUTGOING_MENTIONS = os.getenv("OUTGOING_MENTIONS", "block").strip().lower()
 RETRIEVAL = env_bool("RETRIEVAL", True)
 RETRIEVAL_THRESHOLD = float(os.getenv("RETRIEVAL_THRESHOLD") or 0.6)
 MARKOV_TEST_OUTPUT = env_bool("MARKOV_TEST_OUTPUT", True)
+# train on unique lines only: the corpus is 35% duplicates, which skews output
+CORPUS_DEDUPE = env_bool("CORPUS_DEDUPE", True)
 # which media kinds may be sent by the retrieval path (media.jsonl "kind")
 RETRIEVAL_KINDS = {k.strip().lower() for k in
                    (os.getenv("RETRIEVAL_KINDS") or "gif,image,link").split(",") if k.strip()}
@@ -186,6 +189,8 @@ def load_model(bot_id=None):
                 latest[rid] = rec
 
     corpus = []
+    seen_lines = set()
+    dropped = 0
     pairs = []
     gifs = []
     for rec in latest.values():
@@ -197,7 +202,13 @@ def load_model(bot_id=None):
         if not isinstance(content, str) or not content.strip():
             continue
         content = content.strip()
-        corpus.append(content)
+
+        # training corpus (deduped); the retrieval index below still sees every record
+        if CORPUS_DEDUPE and content in seen_lines:
+            dropped += 1
+        else:
+            seen_lines.add(content)
+            corpus.append(content)
 
         urls = [media[t] for t in TOKEN_RE.findall(content)
                 if t in media and is_sendable(media[t], media_kind.get(t, "link"))]
@@ -216,7 +227,8 @@ def load_model(bot_id=None):
         model = None
         return
     model = markovify.NewlineText("\n".join(corpus), state_size=2)
-    print(f"[model] trained on {corpus_size} messages | "
+    extra = f" ({dropped} duplicate line(s) skipped)" if dropped else ""
+    print(f"[model] trained on {corpus_size} lines{extra} | "
           f"{len(pairs)} retrieval pair(s), {len(set(gifs))} unique url(s)")
 
 

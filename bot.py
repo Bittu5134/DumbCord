@@ -364,13 +364,13 @@ def should_reply(message: discord.Message) -> bool:
 
 @client.event
 async def on_message(message: discord.Message):
-    if message.content.strip().startswith("!reload"):
-        if OWNER_ID and message.author.id != OWNER_ID:
-            return
-        load_media()
-        load_model(client.user.id)
-        await message.reply(f"Reloaded: {corpus_size} messages, {len(media)} url tokens.")
-        return
+    # if message.content.strip().startswith("!reload"):
+    #     if OWNER_ID and message.author.id != OWNER_ID:
+    #         return
+    #     load_media()
+    #     load_model(client.user.id)
+    #     await message.reply(f"Reloaded: {corpus_size} messages, {len(media)} url tokens.")
+    #     return
 
     if not should_reply(message):
         return

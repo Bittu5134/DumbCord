@@ -25,7 +25,8 @@ Behaviour:
 Config (.env / environment):
     TOKEN       discord bot token                       (required)
     GUILD       guild id to scrape                      (required)
-    CHANNEL     text channel id to scrape               (required)
+    SCRAPE_CHANNEL  channel id to train from   (falls back to CHANNEL)
+    CHANNEL     fallback target if SCRAPE_CHANNEL is unset
     DATA_FILE   output jsonl                            (default messages.jsonl)
     STATE_FILE  scraper state json                      (default chat_state.json)
     SKIP_BOTS   true|false - skip all bots, not just self (default true)
@@ -72,7 +73,11 @@ def env_bool(name, default):
 
 TOKEN = os.getenv("TOKEN")
 GUILD_ID = int(os.getenv("GUILD") or 0)
+# channel the bot replies in (bot.py) - also the scraper fallback target
 CHANNEL_ID = int(os.getenv("CHANNEL") or 0)
+# channel scraper.py trains from. Keeps the training channel separate from the
+# channel the bot replies in; defaults to CHANNEL when unset.
+SCRAPE_CHANNEL_ID = int(os.getenv("SCRAPE_CHANNEL") or 0) or CHANNEL_ID
 DATA_FILE = os.getenv("DATA_FILE", "messages.jsonl")
 STATE_FILE = os.getenv("STATE_FILE", "chat_state.json")
 SKIP_BOTS = env_bool("SKIP_BOTS", True)
@@ -224,7 +229,7 @@ class Scraper:
     def _default_state(self):
         return {
             "guild_id": GUILD_ID,
-            "channel_id": CHANNEL_ID,
+            "channel_id": SCRAPE_CHANNEL_ID,
             "oldest_message_id": None,
             "oldest_message_timestamp": None,
             "newest_message_id": None,
@@ -239,11 +244,19 @@ class Scraper:
             try:
                 with open(STATE_FILE, "r", encoding="utf-8") as fh:
                     state = json.load(fh)
-                base = self._default_state()
-                base.update(state)
-                return base
             except Exception as exc:
                 print(f"[warn] could not read {STATE_FILE}: {exc}")
+                return self._default_state()
+            if state.get("channel_id") not in (None, SCRAPE_CHANNEL_ID):
+                archive = f"{STATE_FILE}.{state.get('channel_id')}.bak"
+                os.replace(STATE_FILE, archive)
+                print(f"[state] scrape channel changed "
+                      f"{state.get('channel_id')} -> {SCRAPE_CHANNEL_ID}; "
+                      f"archived the previous state to {archive}")
+                return self._default_state()
+            base = self._default_state()
+            base.update(state)
+            return base
         return self._default_state()
 
     def save_state(self):
@@ -409,7 +422,7 @@ class Scraper:
     # ---- live --------------------------------------------------------------
 
     async def on_live_message(self, message):
-        if message.channel.id != CHANNEL_ID or message.author.id == self.self_id:
+        if message.channel.id != SCRAPE_CHANNEL_ID or message.author.id == self.self_id:
             return
         if self.write(message):
             self.track_position(message, older=False)
@@ -440,12 +453,12 @@ async def on_ready():
         await client.close()
         return
 
-    channel = guild.get_channel(CHANNEL_ID)
+    channel = guild.get_channel(SCRAPE_CHANNEL_ID)
     if channel is None:
         try:
-            channel = await client.fetch_channel(CHANNEL_ID)
+            channel = await client.fetch_channel(SCRAPE_CHANNEL_ID)
         except discord.NotFound:
-            print(f"[error] channel {CHANNEL_ID} not found in '{guild.name}'")
+            print(f"[error] channel {SCRAPE_CHANNEL_ID} not found in '{guild.name}'")
             await client.close()
             return
 
@@ -477,7 +490,7 @@ async def on_message(message):
 @client.event
 async def on_message_edit(_before, after):
     if watch_mode and scraper and scraper.self_id:
-        if after.channel.id == CHANNEL_ID and scraper.wanted(after):
+        if after.channel.id == SCRAPE_CHANNEL_ID and scraper.wanted(after):
             if scraper.write(after, force=True):
                 scraper.flush()
                 print(f"[live] updated {after.id}")
@@ -514,19 +527,21 @@ def parse_args():
 
 
 def main():
-    global scraper, watch_mode, GUILD_ID, CHANNEL_ID
+    global scraper, watch_mode, GUILD_ID, CHANNEL_ID, SCRAPE_CHANNEL_ID
 
     args = parse_args()
     if args.guild:
         GUILD_ID = args.guild
     if args.channel:
-        CHANNEL_ID = args.channel
+        SCRAPE_CHANNEL_ID = args.channel
+    if not SCRAPE_CHANNEL_ID:
+        SCRAPE_CHANNEL_ID = CHANNEL_ID
 
     if not TOKEN:
         print("[error] TOKEN missing (.env or environment)")
         return 1
-    if not GUILD_ID or not CHANNEL_ID:
-        print("[error] GUILD and CHANNEL must be set in .env")
+    if not GUILD_ID or not SCRAPE_CHANNEL_ID:
+        print("[error] GUILD and either SCRAPE_CHANNEL or CHANNEL must be set in .env")
         return 1
 
     if args.all:

@@ -21,7 +21,7 @@ Config (.env / environment):
     TOKEN               discord bot token                       (required)
     GUILD               guild id the @mention trigger applies to (required)
     CHANNEL             channel id the bot always replies in     (required)
-    OWNER               your user id, allowed to use !reload     (optional)
+    OWNER               your user id, allowed to use !dumb_reload (optional)
     DATA_FILE           training corpus            (default messages.jsonl)
     MEDIA_FILE          url token map              (default media.jsonl)
     CHAT_LOG / DM_LOG   reply logs                 (default chats.jsonl / dms.jsonl)
@@ -364,13 +364,16 @@ def should_reply(message: discord.Message) -> bool:
 
 @client.event
 async def on_message(message: discord.Message):
-    # if message.content.strip().startswith("!reload"):
-    #     if OWNER_ID and message.author.id != OWNER_ID:
-    #         return
-    #     load_media()
-    #     load_model(client.user.id)
-    #     await message.reply(f"Reloaded: {corpus_size} messages, {len(media)} url tokens.")
-    #     return
+    if message.content.strip().startswith("!dumb_reload"):
+        if OWNER_ID:
+            if message.author.id != OWNER_ID:
+                return
+        elif not isinstance(message.channel, discord.DMChannel):
+            return          # no OWNER configured -> only usable over DM
+        load_media()
+        load_model(client.user.id)
+        await message.reply(f"Reloaded: {corpus_size} lines, {len(media)} url tokens.")
+        return
 
     if not should_reply(message):
         return

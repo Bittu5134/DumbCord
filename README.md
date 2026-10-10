@@ -1,30 +1,125 @@
 # ChatCord
 
-**A Discord bot that talks like your server.**  
-*Scrapes your channel history, learns from it, and replies in the same voice.*
+**A Discord bot that talks like your server.**
+*Scrapes a channel's history, learns from it, and replies in the same voice.*
 
-```yaml
-!reload  ·  @mention it  ·  or just DM it
-```
+`@mention it` · `DM it` · or just talk in the configured channel
 
-## How It Works
+## How it works
 
-- `scraper.py` backfills and live-watches a channel into `messages.jsonl`.
-- Replies are generated with a Markov chain trained on your corpus; an LSTM (`text.py` → `generate.py`) is included for fun.
-- The bot answers @mentions, DMs, and everything in one configured channel.
+Two scripts, one dataset:
 
-## Run Locally
+| file | role |
+|---|---|
+| `scraper.py` | backfills + live-watches a channel into `messages.jsonl` |
+| `bot.py` | answers DMs, `@mentions` and one channel, using `messages.jsonl` |
+
+The channel it **learns from** (`SCRAPE_CHANNEL`) and the channel it **replies in** (`CHANNEL`) are
+separate settings — they can be the same channel or two different ones.
+
+Stored content is **verbatim** — mentions, roles and `@everyone` are kept exactly as typed.
+The only transformation is pasted URLs becoming `<url:HASH>` tokens, mapped in `media.jsonl`;
+that is what the retrieval index matches on. Messages authored by a bot (including this bot)
+and messages with no text are never stored.
+
+### Two reply paths
+
+1. **Retrieval** — someone said X, someone replied with a paste. Matching learned
+   `text → url` pairs (plus slug keywords like `monica-crying`) sends that GIF/link back.
+   Discord auto-embeds a bare URL, so no upload is needed.
+2. **Markov** — a word-level chain (`state_size = 2`) trained on the corpus, deduplicated by
+   default. Any `<url:...>` token it emits is resolved back to a real URL.
+
+Ping neutralisation happens **at reply time, never in the dataset**: `@everyone`/`@here` are
+deleted outright, and `AllowedMentions` blocks users/roles/everyone according to
+`OUTGOING_MENTIONS`.
+
+## Setup
 
 ```bash
+python -m venv .venv && source .venv/bin/activate
 pip install "discord.py>=2.3" markovify
-python scraper.py        # collect the corpus
-python bot.py            # let it loose
 ```
 
-<sub>Configurable via `TOKEN` · `GUILD` · `CHANNEL` in `.env`</sub>
+Create `.env`:
 
-<br>
+```ini
+TOKEN=...           # bot token
+GUILD=...           # server id (the @mention trigger is scoped to it)
+CHANNEL=...         # channel the bot replies in
+SCRAPE_CHANNEL=...  # channel to train from (falls back to CHANNEL when unset)
+```
 
-## Built Using
+Enable **Message Content Intent** for the bot in the Discord developer portal, or it will
+receive empty message text.
 
-[discord.py](https://github.com/Rapptz/discord.py) · [Markovify](https://github.com/jsvine/markovify) · [PyTorch](https://github.com/pytorch/pytorch)
+## Usage
+
+```bash
+python scraper.py                 # asks how many messages to save (Enter = as many as possible)
+python scraper.py --limit 5000    # cap the backlog this run (new messages are never capped)
+python scraper.py --all           # no cap
+python scraper.py --watch         # stay online and capture new messages after backfilling
+python scraper.py --no-check-edits
+python scraper.py --channel <id> --guild <id>
+```
+
+Reruns resume from `chat_state.json`: each run first catches up on messages posted since the
+last run, then continues walking backwards through history. Progress is flushed periodically
+and on Ctrl-C, so interrupting is safe.
+
+```bash
+python bot.py
+```
+
+## Config
+
+Everything except the three IDs is optional.
+
+| key | default | used by | meaning |
+|---|---|---|---|
+| `TOKEN` | — *required* | both | bot token |
+| `GUILD` | — *required* | both | server id |
+| `CHANNEL` | — *required* | both | channel the bot replies in (scraper fallback) |
+| `SCRAPE_CHANNEL` | `CHANNEL` | scraper | channel to train from |
+| `OWNER` | — | bot | user id allowed to use `!reload` |
+| `DATA_FILE` | `messages.jsonl` | both | training corpus |
+| `MEDIA_FILE` | `media.jsonl` | both | `<url:HASH>` → url map |
+| `STATE_FILE` | `chat_state.json` | scraper | resume state |
+| `CHAT_LOG` / `DM_LOG` | `chats.jsonl` / `dms.jsonl` | bot | reply logs |
+| `SKIP_BOTS` | `true` | scraper | skip every bot author, not just itself |
+| `SKIP_EMPTY` | `true` | scraper | skip messages with no text |
+| `EDIT_SCAN` | `200` | scraper | how many recent messages to recheck for edits |
+| `URL_TOKENS` | `true` | scraper | tokenise pasted URLs |
+| `OUTGOING_MENTIONS` | `block` | bot | see below |
+| `RETRIEVAL` | `true` | bot | try the url-retrieval path first |
+| `RETRIEVAL_THRESHOLD` | `0.6` | bot | query coverage needed to send a link |
+| `RETRIEVAL_KINDS` | `gif,image,link` | bot | which paste kinds may be sent |
+| `CORPUS_DEDUPE` | `true` | bot | train on unique lines only |
+| `MARKOV_TEST_OUTPUT` | `true` | bot | markovify's verbatim-copy filter |
+
+### `OUTGOING_MENTIONS`
+
+| mode | users | roles | everyone | notes |
+|---|---|---|---|---|
+| `block` | ✗ | ✗ | ✗ | default |
+| `silent` | ✗ | ✗ | ✗ | also marks the message silent in Discord |
+| `allow_users` | ✓ | ✗ | ✗ | |
+| `allow_all` | ✓ | ✓ | ✗ | `@everyone`/`@here` are always stripped regardless |
+
+## Reloading
+
+`!dumb_reload` retrains from `DATA_FILE` without a restart. With `OWNER` set it is owner-only;
+with `OWNER` unset it is only accepted over DM. Restarting the bot does the same thing.
+
+## Data files
+
+All gitignored, all regenerated by the scripts: `messages.jsonl`, `media.jsonl`,
+`chat_state.json`, `chats.jsonl`, `dms.jsonl` — plus `.env` and `.venv/`.
+
+Log entries look like:
+`{ts, author_id, author, guild_id, channel_id, message, reply}`
+
+## Built with
+
+[discord.py](https://github.com/Rapptz/discord.py) · [Markovify](https://github.com/jsvine/markovify)

@@ -20,6 +20,10 @@ No LLM. No API key. No filter. Everything stays on your machine, so the bot is a
 
 ## Quickstart
 
+You can self-train and host the bot, or try it out on my own Discord server:
+
+[![Join my Discord server](https://img.shields.io/badge/Discord-Join%20server-5865F2?logo=discord&logoColor=white)](https://bittu.dev/discord/)
+
 ```bash
 # 1. Clone & set up environment
 git clone https://github.com/Bittu5134/DumbCord.git && cd DumbCord
@@ -54,7 +58,8 @@ python bot.py                 # start listening and replying
 
 <img src="./assets/showcase.webp" alt="DumbCord in action — a grid of real replies from the bot" width="813">
 
-<sub>Real replies from the server · names pixelated for privacy</sub>
+<sub>Real replies from the [server](https://bittu.dev/discord/) · names pixelated for privacy</sub>
+
 
 </div>
 

@@ -16,7 +16,7 @@ No LLM. No API key. No filter. Everything stays on your machine, so the bot is a
 ## How It Works
 
 - A scraper script first downloads the server history to train the bot
-- The actual bot is then run, which loads this message history and uses retrieval and Markov methods to reply to users with text and GIFs.
+- The actual bot is then run, which loads this message history and uses retrieval and Markov-based methods to generate text replies and GIF responses.
 
 ## Quickstart
 

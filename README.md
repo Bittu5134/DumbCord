@@ -1,5 +1,8 @@
 <div align="center">
 
+<!-- ![alt text](./assets/i_am_scared.png) -->
+<img src="./assets/i_am_scared.png" style="max-height:50vh;">
+
 # DumbCord
 
 **A Discord bot that learns from your server chats — and becomes you!**
@@ -9,7 +12,6 @@ unfiltered as your server is. A true mirror.
 
 <sub>`@mention` it · DM it · or just talk in the configured channel — [detailed usage →](USAGE.md)</sub>
 
-<br>
 
 </div>
 
@@ -44,7 +46,7 @@ python bot.py                 # start listening and replying
 - Chat directly in the configured channel
 - Use `!dumb_reload` after scraping new messages to retrain on the fly
 
-<sub>[Detailed configuration & troubleshooting →](USAGE.md)</sub>
+### [Documentation →](USAGE.md)
 
 <br>
 

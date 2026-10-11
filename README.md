@@ -52,7 +52,7 @@ python bot.py                 # start listening and replying
 
 <div align="center">
 
-<img src="./assets/showcase.png" alt="DumbCord in action — a grid of real replies from the bot" width="813">
+<img src="./assets/showcase.webp" alt="DumbCord in action — a grid of real replies from the bot" width="813">
 
 <sub>Real replies from the server · names pixelated for privacy</sub>
 

@@ -1,16 +1,8 @@
-<img src="./assets/i_am_scared.png" align="right" width="300" alt="DumbCord preview">
-
 # DumbCord
 
-**A Discord bot that learns from your server chats — and becomes you!**
-
-No LLM. No API key. No filter. Everything stays on your machine, so the bot is as
-unfiltered as your server is. A true mirror.
-
-<sub>`@mention` it · DM it · or just talk in the configured channel — [detailed usage →](USAGE.md)</sub>
-
-<br clear="right" />
-<br />
+| | |
+| :--- | :---: |
+| **A Discord bot that learns from your server chats — and becomes you!**<br><br>No LLM. No API key. No filter. Everything stays on your machine, so the bot is as unfiltered as your server is. A true mirror.<br><br><sub>`@mention` it · DM it · or just talk in the configured channel — [detailed usage →](USAGE.md)</sub> | ![DumbCord preview](./assets/i_am_scared.png) |
 
 ## How It Works
 

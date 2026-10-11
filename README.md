@@ -1,7 +1,4 @@
-<div align="center">
-
-<!-- ![alt text](./assets/i_am_scared.png) -->
-<img src="./assets/i_am_scared.png" style="max-height:50vh;">
+<img src="./assets/i_am_scared.png" align="right" width="300" alt="DumbCord preview">
 
 # DumbCord
 
@@ -12,8 +9,8 @@ unfiltered as your server is. A true mirror.
 
 <sub>`@mention` it · DM it · or just talk in the configured channel — [detailed usage →](USAGE.md)</sub>
 
-
-</div>
+<br clear="right" />
+<br />
 
 ## How It Works
 

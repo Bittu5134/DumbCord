@@ -8,7 +8,7 @@
 
 No LLM. No API key. No filter. Everything stays on your machine, so the bot is as unfiltered as your server is. A true mirror.
 
-<sub>`@mention` it · DM it · or just talk in the configured channel — [detailed usage →](USAGE.md)</sub>
+<sub>`@mention` it · DM it · or just talk in the configured channel</sub>
 
 </div>
 
@@ -17,6 +17,7 @@ No LLM. No API key. No filter. Everything stays on your machine, so the bot is a
 
 - A scraper script first downloads the server history to train the bot
 - The actual bot is then run, which loads this message history and uses retrieval and Markov-based methods to generate text replies and GIF responses.
+- [Read more on my blog](https://bittu.dev/blog/a-very-dumb-markov-chatbot/)
 
 ## Quickstart
 

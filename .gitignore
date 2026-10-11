@@ -5,6 +5,7 @@
 .venv/
 .vscode/
 .wakatime-project
+.pi/
 
 # generated data (scraper output + bot logs)
 messages.jsonl
@@ -24,3 +25,11 @@ __pycache__/
 
 # local-only scripts (kept out of git)
 extract_images.py
+
+# generated screenshot kit (local-only)
+SCREENSHOTS.md
+screenshot_links/
+assets/screenshots/
+assets/showcase/
+assets/showcase-censored/
+assets/hot-takes/

@@ -1,8 +1,17 @@
+<div align="center">
+
+<img src="./assets/logo.png" alt="DumbCord mascot" width="270">
+
 # DumbCord
 
-| | |
-| :--- | :---: |
-| **A Discord bot that learns from your server chats — and becomes you!**<br><br>No LLM. No API key. No filter. Everything stays on your machine, so the bot is as unfiltered as your server is. A true mirror.<br><br><sub>`@mention` it · DM it · or just talk in the configured channel — [detailed usage →](USAGE.md)</sub> | ![DumbCord preview](./assets/i_am_scared.png) |
+**A Discord bot that learns from your server chats — and becomes you!**
+
+No LLM. No API key. No filter. Everything stays on your machine, so the bot is as unfiltered as your server is. A true mirror.
+
+<sub>`@mention` it · DM it · or just talk in the configured channel — [detailed usage →](USAGE.md)</sub>
+
+</div>
+
 
 ## How It Works
 
@@ -38,6 +47,16 @@ python bot.py                 # start listening and replying
 ### [Documentation →](USAGE.md)
 
 <br>
+
+## Screenshots
+
+<div align="center">
+
+<img src="./assets/showcase.png" alt="DumbCord in action — a grid of real replies from the bot" width="813">
+
+<sub>Real replies from the server · names pixelated for privacy</sub>
+
+</div>
 
 ## Built Using
 

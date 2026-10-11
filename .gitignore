@@ -1,35 +1,23 @@
 # secrets -- never commit
 .env
 
-# local env / editor
+# local env / editor / tooling
 .venv/
 .vscode/
 .wakatime-project
 .pi/
-
-# generated data (scraper output + bot logs)
-messages.jsonl
-media.jsonl
-chats.jsonl
-dms.jsonl
-chat_state.json
-messages.txt
-*.tmp
-extracted_images/
-images/
-downloads/
-
-# python
+blogs
 __pycache__/
 *.py[cod]
 
-# local-only scripts (kept out of git)
-extract_images.py
+# runtime data (bot + scraper working files)
+data/
 
-# generated screenshot kit (local-only)
-SCREENSHOTS.md
-screenshot_links/
-assets/screenshots/
-assets/showcase/
-assets/showcase-censored/
-assets/hot-takes/
+# local working set (screenshot kit, extracted media, notes)
+local/
+
+# scratch outputs
+images/
+downloads/
+messages.txt
+*.tmp

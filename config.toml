@@ -8,21 +8,26 @@ scrape_channel = 877526498058309654   # channel the scraper learns from
 # owner        = 0                    # user id allowed to run !dumb_reload (0 = DM only)
 
 # ---------------------------------------------------------------------------
+# Runtime data lives in data/ (gitignored). Override below if you move it.
+
+[scraper]
+data_file  = "data/messages.jsonl"    # training corpus
+state_file = "data/chat_state.json"   # resume state
+media_file = "data/media.jsonl"       # <url:HASH> -> url map
+
+[bot]
+chat_log   = "data/chats.jsonl"       # guild reply log
+dm_log     = "data/dms.jsonl"         # DM reply log
+
+# ---------------------------------------------------------------------------
 # Everything below is optional and currently commented out, i.e. running on its
 # default. Uncomment a line to override it. See README.md for the full tables.
 #
-# [scraper]
-# data_file  = "messages.jsonl"    # training corpus
-# state_file = "chat_state.json"   # resume state
-# media_file = "media.jsonl"       # <url:HASH> -> url map
 # url_tokens = true                # tokenise pasted URLs
 # skip_bots  = true                # skip every bot author, not just itself
 # skip_empty = true                # skip messages with no text
 # edit_scan  = 200                 # recent messages rechecked for edits
 #
-# [bot]
-# chat_log            = "chats.jsonl"   # guild reply log
-# dm_log              = "dms.jsonl"     # DM reply log
 # outgoing_mentions   = "block"         # block | silent | allow_users | allow_all
 # retrieval           = true            # try url retrieval before markov
 # retrieval_threshold = 0.6             # 0..1 query coverage needed to send a link
